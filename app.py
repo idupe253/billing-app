@@ -114,16 +114,22 @@ STREAMLIT_THEMES = {
     .stApp { background: #f5f3f7; }
     .stApp > header { background: #f5f3f7; }
     .stSidebar > div:first-child { background: #edeaf2; }
-    .stApp, .stMarkdown, .stText, .stCaption, .stAlert, p, span, label, div {
+    .stMarkdown, .stMarkdown p, .stCaption, .stAlert p,
+    h1, h2, h3, h4,
+    .stTabs [data-baseweb="tab"],
+    .stButton > button,
+    .stDownloadButton > button,
+    .stTextInput label, .stSelectbox label, .stFileUploader label,
+    .stRadio label, .stCheckbox label,
+    div[data-testid="stMetricValue"],
+    .stDataFrame th {
         font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
     }
-    h1, h2, h3 { font-family: 'Montserrat', sans-serif !important; color: #2d2640 !important; }
-    .stTabs [data-baseweb="tab"] { font-family: 'Montserrat', sans-serif !important; }
+    h1, h2, h3 { color: #2d2640 !important; }
     .stTabs [aria-selected="true"] { border-bottom-color: #7c3aed !important; color: #7c3aed !important; }
     .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
     .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
     .stDownloadButton > button { border-color: #7c3aed !important; color: #7c3aed !important; }
-    .stProgress .st-bo { background-color: #7c3aed !important; }
     div[data-testid="stExpander"] { border-color: #e8e4ef !important; }
     </style>
     """,
@@ -133,11 +139,19 @@ STREAMLIT_THEMES = {
     .stApp { background: #1a1625; color: #e8e4ef; }
     .stApp > header { background: #1a1625; }
     .stSidebar > div:first-child { background: #231e30; }
-    .stApp, .stMarkdown, .stText, .stCaption, .stAlert, p, span, label, div {
+    .stMarkdown, .stMarkdown p, .stCaption, .stAlert p,
+    h1, h2, h3, h4,
+    .stTabs [data-baseweb="tab"],
+    .stButton > button,
+    .stDownloadButton > button,
+    .stTextInput label, .stSelectbox label, .stFileUploader label,
+    .stRadio label, .stCheckbox label,
+    div[data-testid="stMetricValue"],
+    .stDataFrame th {
         font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
     }
-    h1, h2, h3 { font-family: 'Montserrat', sans-serif !important; color: #e8e4ef !important; }
-    .stTabs [data-baseweb="tab"] { font-family: 'Montserrat', sans-serif !important; color: #9b93a8 !important; }
+    h1, h2, h3 { color: #e8e4ef !important; }
+    .stTabs [data-baseweb="tab"] { color: #9b93a8 !important; }
     .stTabs [aria-selected="true"] { border-bottom-color: #a78bfa !important; color: #a78bfa !important; }
     .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
     .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
@@ -155,18 +169,23 @@ STREAMLIT_THEMES = {
     .stApp { background: #f7f5fa; }
     .stApp > header { background: #f7f5fa; }
     .stSidebar > div:first-child { background: #f0eafc; }
-    .stApp, .stMarkdown, .stText, .stCaption, .stAlert, p, span, label, div {
+    .stMarkdown, .stMarkdown p, .stCaption, .stAlert p,
+    h1, h2, h3, h4,
+    .stTabs [data-baseweb="tab"],
+    .stButton > button,
+    .stDownloadButton > button,
+    .stTextInput label, .stSelectbox label, .stFileUploader label,
+    .stRadio label, .stCheckbox label,
+    div[data-testid="stMetricValue"],
+    .stDataFrame th {
         font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
     }
-    h1, h2, h3 { font-family: 'Montserrat', sans-serif !important; color: #1e1535 !important; }
-    .stTabs [data-baseweb="tab"] { font-family: 'Montserrat', sans-serif !important; }
+    h1, h2, h3 { color: #1e1535 !important; }
     .stTabs [aria-selected="true"] { border-bottom-color: #7c3aed !important; color: #7c3aed !important; }
     .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
     .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
     .stDownloadButton > button { border-color: #7c3aed !important; color: #7c3aed !important; }
-    .stProgress .st-bo { background-color: #7c3aed !important; }
     div[data-testid="stExpander"] { border-color: #ddd6ec !important; }
-    .stSidebar .stFileUploader label { color: #6b5a9e !important; }
     </style>
     """,
 }
