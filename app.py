@@ -14,6 +14,7 @@ st.set_page_config(page_title="⚡ Billing Automation", layout="wide")
 # Файлы для хранения настроек между сессиями
 EXTRA_DB_FILE = Path("extra_db_users.json")
 PRICES_FILE = Path("service_prices.json")
+THEME_FILE = Path("theme.json")
 
 # Реестр сервисов
 SERVICES = [
@@ -86,6 +87,89 @@ def load_prices() -> dict:
 def save_prices(prices: dict):
     """Сохранение цен за лицензию в JSON."""
     PRICES_FILE.write_text(json.dumps(prices, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_theme() -> str:
+    """Загрузка выбранной темы."""
+    if THEME_FILE.exists():
+        try:
+            data = json.loads(THEME_FILE.read_text(encoding="utf-8"))
+            return data.get("theme", "accent")
+        except Exception:
+            pass
+    return "accent"
+
+
+def save_theme(theme: str):
+    """Сохранение выбранной темы."""
+    THEME_FILE.write_text(json.dumps({"theme": theme}), encoding="utf-8")
+
+
+# ─── CSS темы для Streamlit UI ────────────────────────────────────────────────
+
+STREAMLIT_THEMES = {
+    "light": """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+    .stApp { background: #f5f3f7; }
+    .stApp > header { background: #f5f3f7; }
+    .stSidebar > div:first-child { background: #edeaf2; }
+    .stApp, .stMarkdown, .stText, .stCaption, .stAlert, p, span, label, div {
+        font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
+    }
+    h1, h2, h3 { font-family: 'Montserrat', sans-serif !important; color: #2d2640 !important; }
+    .stTabs [data-baseweb="tab"] { font-family: 'Montserrat', sans-serif !important; }
+    .stTabs [aria-selected="true"] { border-bottom-color: #7c3aed !important; color: #7c3aed !important; }
+    .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
+    .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
+    .stDownloadButton > button { border-color: #7c3aed !important; color: #7c3aed !important; }
+    .stProgress .st-bo { background-color: #7c3aed !important; }
+    div[data-testid="stExpander"] { border-color: #e8e4ef !important; }
+    </style>
+    """,
+    "dark": """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+    .stApp { background: #1a1625; color: #e8e4ef; }
+    .stApp > header { background: #1a1625; }
+    .stSidebar > div:first-child { background: #231e30; }
+    .stApp, .stMarkdown, .stText, .stCaption, .stAlert, p, span, label, div {
+        font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
+    }
+    h1, h2, h3 { font-family: 'Montserrat', sans-serif !important; color: #e8e4ef !important; }
+    .stTabs [data-baseweb="tab"] { font-family: 'Montserrat', sans-serif !important; color: #9b93a8 !important; }
+    .stTabs [aria-selected="true"] { border-bottom-color: #a78bfa !important; color: #a78bfa !important; }
+    .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
+    .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
+    .stDownloadButton > button { border-color: #a78bfa !important; color: #a78bfa !important; }
+    div[data-testid="stExpander"] { border-color: #342d45 !important; }
+    .stTextInput > div > div > input { background: #231e30 !important; color: #e8e4ef !important; border-color: #342d45 !important; }
+    .stSelectbox > div > div { background: #231e30 !important; color: #e8e4ef !important; }
+    div[data-testid="stDataFrame"] { background: #231e30 !important; }
+    .stAlert { background: #2d2545 !important; }
+    </style>
+    """,
+    "accent": """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+    .stApp { background: #f7f5fa; }
+    .stApp > header { background: #f7f5fa; }
+    .stSidebar > div:first-child { background: #f0eafc; }
+    .stApp, .stMarkdown, .stText, .stCaption, .stAlert, p, span, label, div {
+        font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
+    }
+    h1, h2, h3 { font-family: 'Montserrat', sans-serif !important; color: #1e1535 !important; }
+    .stTabs [data-baseweb="tab"] { font-family: 'Montserrat', sans-serif !important; }
+    .stTabs [aria-selected="true"] { border-bottom-color: #7c3aed !important; color: #7c3aed !important; }
+    .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
+    .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
+    .stDownloadButton > button { border-color: #7c3aed !important; color: #7c3aed !important; }
+    .stProgress .st-bo { background-color: #7c3aed !important; }
+    div[data-testid="stExpander"] { border-color: #ddd6ec !important; }
+    .stSidebar .stFileUploader label { color: #6b5a9e !important; }
+    </style>
+    """,
+}
 
 # ─── Парсер справочника сотрудников ──────────────────────────────────────────
 
@@ -607,14 +691,20 @@ def build_all_dept_zip(db_users, extra_db, service_data, prices, theme="light") 
 # ─── Основное приложение ──────────────────────────────────────────────────────
 
 def main():
-    st.markdown("# ⚡ Billing Automation")
-    st.caption("Автоматическое распределение лицензий по ЦФО")
-
     # Инициализация состояния сессии
     if "extra_db" not in st.session_state:
         st.session_state.extra_db = load_extra_db()
     if "prices" not in st.session_state:
         st.session_state.prices = load_prices()
+    if "selected_theme" not in st.session_state:
+        st.session_state.selected_theme = load_theme()
+
+    # Применение CSS темы
+    current_theme = st.session_state.selected_theme
+    st.markdown(STREAMLIT_THEMES.get(current_theme, STREAMLIT_THEMES["accent"]), unsafe_allow_html=True)
+
+    st.markdown("# ⚡ Billing Automation")
+    st.caption("Автоматическое распределение лицензий по ЦФО")
 
     extra_db = st.session_state.extra_db
     prices = st.session_state.prices
@@ -687,9 +777,25 @@ def main():
             save_prices(prices)
 
         st.divider()
-        st.subheader("🎨 Тема HTML-отчётов")
-        st.caption("Текущая тема: 💜 Акцентная")
-        st.session_state.selected_theme = "accent"
+        st.subheader("🎨 Тема оформления")
+        st.caption("Применяется к интерфейсу приложения и HTML-отчётам по отделам.")
+
+        theme_options = ["light", "dark", "accent"]
+        theme_labels = {"light": "☀️ Светлая", "dark": "🌙 Тёмная", "accent": "💜 Акцентная"}
+        current_idx = theme_options.index(st.session_state.selected_theme) if st.session_state.selected_theme in theme_options else 2
+
+        theme_choice = st.radio(
+            "Тема",
+            theme_options,
+            index=current_idx,
+            format_func=lambda x: theme_labels[x],
+            horizontal=True,
+            key="theme_radio",
+        )
+        if theme_choice != st.session_state.selected_theme:
+            st.session_state.selected_theme = theme_choice
+            save_theme(theme_choice)
+            st.rerun()
 
     # ─── Вкладка «Доп DB Users» ──────────────────────────────────────────────
 
