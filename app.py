@@ -151,16 +151,35 @@ STREAMLIT_THEMES = {
         font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif !important;
     }
     h1, h2, h3 { color: #e8e4ef !important; }
+    .stMarkdown p, .stMarkdown li, .stMarkdown span,
+    .stCaption, .stCaption p,
+    .stAlert p,
+    .stTextInput label, .stSelectbox label, .stFileUploader label,
+    .stRadio label, .stRadio label span, .stCheckbox label,
+    div[data-testid="stMetricLabel"], div[data-testid="stMetricValue"],
+    .stFileUploader section > div,
+    .stSidebar p, .stSidebar label, .stSidebar span,
+    .stSidebar .stMarkdown p, .stSidebar .stCaption {
+        color: #e8e4ef !important;
+    }
+    small, .stCaption small, .stFileUploader small { color: #9b93a8 !important; }
     .stTabs [data-baseweb="tab"] { color: #9b93a8 !important; }
     .stTabs [aria-selected="true"] { border-bottom-color: #a78bfa !important; color: #a78bfa !important; }
-    .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; }
+    .stButton > button[kind="primary"] { background-color: #7c3aed !important; border-color: #7c3aed !important; color: #fff !important; }
     .stButton > button[kind="primary"]:hover { background-color: #6d28d9 !important; }
+    .stButton > button { color: #e8e4ef !important; border-color: #342d45 !important; }
     .stDownloadButton > button { border-color: #a78bfa !important; color: #a78bfa !important; }
     div[data-testid="stExpander"] { border-color: #342d45 !important; }
+    div[data-testid="stExpander"] summary span { color: #e8e4ef !important; }
     .stTextInput > div > div > input { background: #231e30 !important; color: #e8e4ef !important; border-color: #342d45 !important; }
     .stSelectbox > div > div { background: #231e30 !important; color: #e8e4ef !important; }
+    .stSelectbox > div > div > div { color: #e8e4ef !important; }
     div[data-testid="stDataFrame"] { background: #231e30 !important; }
-    .stAlert { background: #2d2545 !important; }
+    .stAlert { background: #2d2545 !important; color: #e8e4ef !important; }
+    .stDivider { border-color: #342d45 !important; }
+    hr { border-color: #342d45 !important; }
+    .stSidebar hr { border-color: #342d45 !important; }
+    .stFileUploader > section { background: #231e30 !important; border-color: #342d45 !important; }
     </style>
     """,
     "accent": """
