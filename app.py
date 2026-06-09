@@ -688,16 +688,8 @@ def main():
 
         st.divider()
         st.subheader("🎨 Тема HTML-отчётов")
-        st.caption("Выберите оформление для HTML-отчётов по отделам.")
-
-        theme_choice = st.radio(
-            "Тема",
-            ["light", "dark", "accent"],
-            format_func=lambda x: {"light": "☀️ Светлая", "dark": "🌙 Тёмная", "accent": "💜 Акцентная"}[x],
-            horizontal=True,
-            key="theme_choice",
-        )
-        st.session_state.selected_theme = theme_choice
+        st.caption("Текущая тема: 💜 Акцентная")
+        st.session_state.selected_theme = "accent"
 
     # ─── Вкладка «Доп DB Users» ──────────────────────────────────────────────
 
