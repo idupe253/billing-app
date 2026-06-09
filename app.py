@@ -350,6 +350,33 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
     db_rows = db_rows.sort_values("Nickname").reset_index(drop=True)
     sheets["DB Users"] = db_rows
 
+    # Сводный лист в формате для финансов (все отделы, все сервисы)
+    finance_rows = []
+    for svc_id, nicks in service_data.items():
+        svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
+        svc_extra = extra_by_svc.get(svc_id, {})
+        price = prices.get(svc_id, 0)
+        for nick in sorted(nicks):
+            dept = main_map.get(nick)
+            if dept is None:
+                dept = svc_extra.get(nick)
+            if dept is None:
+                dept = "Не найден"
+            cost = round(price, 2) if price else ""
+            finance_rows.append({
+                "Продукты ТХ": f"ПО {svc_name}",
+                "Nickname / Наименование": nick,
+                "Потребитель": dept,
+                "Единица продукта": "1 лицензия",
+                "Количество": 1,
+                "Цена": cost,
+                "Стоимость": cost,
+                "Комментарий": "",
+                "Свободное поле": "",
+            })
+    if finance_rows:
+        sheets["Для финансов"] = pd.DataFrame(finance_rows)
+
     return sheets
 
 
@@ -370,7 +397,7 @@ def sheets_to_excel(sheets: dict[str, pd.DataFrame]) -> bytes:
 # ─── Генерация отчёта по отделу (HTML + XLSX) ────────────────────────────────
 
 def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict) -> str:
-    """Генерация красивого HTML-отчёта для одного отдела."""
+    """Генерация HTML-отчёта для отдела с раскрывающимися списками пользователей."""
     date_str = datetime.now().strftime("%d.%m.%Y")
 
     rows_html = ""
@@ -380,26 +407,42 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
     for svc_id, nicks in service_data.items():
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
         svc_extra = extra_by_svc.get(svc_id, {})
-        count = 0
-        for nick in nicks:
+
+        # Собираем ники этого отдела в этом сервисе
+        dept_nicks = []
+        for nick in sorted(nicks):
             d = main_map.get(nick)
             if d is None:
                 d = svc_extra.get(nick)
             if d == dept:
-                count += 1
+                dept_nicks.append(nick)
+
+        count = len(dept_nicks)
         if count == 0:
             continue
+
         price = prices.get(svc_id, 0)
         cost = round(count * price, 2) if price else 0
         total_users += count
         total_cost += cost
         cost_str = f"{cost:,.2f} ₽" if price else "—"
+        price_str = f"{price:,.2f} ₽" if price else "—"
+
+        # Список пользователей для раскрытия
+        user_list_html = "".join(f"<li>{n}</li>" for n in dept_nicks)
+        svc_id_safe = re.sub(r'\W', '_', svc_id)
+
         rows_html += f"""
-        <tr>
-            <td>{svc_name}</td>
+        <tr class="svc-row" onclick="toggle('{svc_id_safe}')">
+            <td><span class="arrow" id="arrow_{svc_id_safe}">▶</span> {svc_name}</td>
             <td style="text-align:center">{count}</td>
-            <td style="text-align:right">{f'{price:,.2f} ₽' if price else '—'}</td>
+            <td style="text-align:right">{price_str}</td>
             <td style="text-align:right">{cost_str}</td>
+        </tr>
+        <tr class="user-row" id="users_{svc_id_safe}" style="display:none">
+            <td colspan="4">
+                <ul class="user-list">{user_list_html}</ul>
+            </td>
         </tr>"""
 
     if not rows_html:
@@ -422,11 +465,30 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
   table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
   th {{ background: #f1f5f9; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; padding: 10px 14px; text-align: left; border-bottom: 2px solid #e2e8f0; }}
   td {{ padding: 10px 14px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }}
-  tr:hover {{ background: #f8fafc; }}
+  .svc-row {{ cursor: pointer; transition: background 0.15s; }}
+  .svc-row:hover {{ background: #f0f4ff; }}
+  .arrow {{ display: inline-block; font-size: 11px; margin-right: 6px; transition: transform 0.2s; color: #94a3b8; }}
+  .arrow.open {{ transform: rotate(90deg); }}
+  .user-list {{ list-style: none; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 0 8px 28px; }}
+  .user-list li {{ font-size: 13px; color: #475569; padding: 2px 0; }}
+  .user-row td {{ background: #f8fafc; padding: 4px 14px; border-bottom: 1px solid #e8ecf1; }}
   .total {{ font-weight: 700; background: #f1f5f9; }}
   .total td {{ border-top: 2px solid #e2e8f0; padding-top: 12px; }}
   .footer {{ margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; }}
 </style>
+<script>
+function toggle(id) {{
+  var row = document.getElementById('users_' + id);
+  var arrow = document.getElementById('arrow_' + id);
+  if (row.style.display === 'none') {{
+    row.style.display = 'table-row';
+    arrow.classList.add('open');
+  }} else {{
+    row.style.display = 'none';
+    arrow.classList.remove('open');
+  }}
+}}
+</script>
 </head>
 <body>
 <div class="container">
@@ -456,42 +518,38 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
 
 
 def build_dept_excel(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict) -> bytes:
-    """Генерация Excel-файла для одного отдела: список пользователей + сводка."""
-    sheets = {}
-
-    # Список пользователей по сервисам
+    """Генерация Excel для отдела в формате для финансов."""
     all_rows = []
     for svc_id, nicks in service_data.items():
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
         svc_extra = extra_by_svc.get(svc_id, {})
+        price = prices.get(svc_id, 0)
         for nick in sorted(nicks):
             d = main_map.get(nick)
             if d is None:
                 d = svc_extra.get(nick)
             if d == dept:
-                all_rows.append({"Nickname": nick, "Сервис": svc_name})
-    if all_rows:
-        sheets["Пользователи"] = pd.DataFrame(all_rows)
+                cost = round(price, 2) if price else ""
+                all_rows.append({
+                    "Продукты ТХ": f"ПО {svc_name}",
+                    "Nickname / Наименование": nick,
+                    "Потребитель": dept,
+                    "Единица продукта": "1 лицензия",
+                    "Количество": 1,
+                    "Цена": cost,
+                    "Стоимость": cost,
+                    "Комментарий": "",
+                    "Свободное поле": "",
+                })
 
-    # Сводка
-    summary_rows = []
-    total_users = 0
-    total_cost = 0.0
-    for svc_id, nicks in service_data.items():
-        svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
-        count = sum(1 for n in nicks if (main_map.get(n) or svc_extra.get(n)) == dept)
-        if count == 0:
-            continue
-        price = prices.get(svc_id, 0)
-        cost = round(count * price, 2) if price else 0
-        total_users += count
-        total_cost += cost
-        summary_rows.append({"Сервис": svc_name, "Кол-во": count, "Цена/шт": price or "", "Стоимость": cost or ""})
-    summary_rows.append({"Сервис": "ИТОГО", "Кол-во": total_users, "Цена/шт": "", "Стоимость": total_cost or ""})
-    sheets["Сводка"] = pd.DataFrame(summary_rows)
+    if not all_rows:
+        all_rows.append({
+            "Продукты ТХ": "", "Nickname / Наименование": "", "Потребитель": dept,
+            "Единица продукта": "", "Количество": "", "Цена": "",
+            "Стоимость": "", "Комментарий": "", "Свободное поле": "",
+        })
 
-    return sheets_to_excel(sheets)
+    return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
 
 
 def build_all_dept_zip(db_users, extra_db, service_data, prices) -> bytes:
