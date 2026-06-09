@@ -396,19 +396,42 @@ def sheets_to_excel(sheets: dict[str, pd.DataFrame]) -> bytes:
 
 # ─── Генерация отчёта по отделу (HTML + XLSX) ────────────────────────────────
 
-def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict) -> str:
-    """Генерация HTML-отчёта для отдела с раскрывающимися списками пользователей."""
+def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict, theme: str = "light") -> str:
+    """Генерация HTML-отчёта для отдела. Темы: light, dark, accent."""
     date_str = datetime.now().strftime("%d.%m.%Y")
 
+    # Цветовые схемы в стиле брендбука (Montserrat, фиолетовый акцент, мягкие тона)
+    themes = {
+        "light": {
+            "bg": "#f5f3f7", "card": "#ffffff", "text": "#2d2640", "text2": "#6b6480",
+            "border": "#e8e4ef", "accent": "#7c3aed", "accent_light": "#f3eeff",
+            "hover": "#f9f7fc", "user_bg": "#faf8fe", "user_text": "#5b5272",
+            "total_bg": "#f3eeff", "th_bg": "#f8f6fb", "th_text": "#7c6f96",
+        },
+        "dark": {
+            "bg": "#1a1625", "card": "#231e30", "text": "#e8e4ef", "text2": "#9b93a8",
+            "border": "#342d45", "accent": "#a78bfa", "accent_light": "#2d2545",
+            "hover": "#2a2438", "user_bg": "#1e1a2a", "user_text": "#b0a8c0",
+            "total_bg": "#2d2545", "th_bg": "#1e1a2a", "th_text": "#9b93a8",
+        },
+        "accent": {
+            "bg": "#f7f5fa", "card": "#ffffff", "text": "#1e1535", "text2": "#6b6480",
+            "border": "#ddd6ec", "accent": "#7c3aed", "accent_light": "#ede5ff",
+            "hover": "#f5f0ff", "user_bg": "#f9f5ff", "user_text": "#5b4a80",
+            "total_bg": "#7c3aed", "th_bg": "#f0eafc", "th_text": "#6b5a9e",
+            "total_text": "#ffffff",
+        },
+    }
+    t = themes.get(theme, themes["light"])
+    total_text = t.get("total_text", t["text"])
+
     rows_html = ""
-    total_users = 0
     total_cost = 0.0
 
     for svc_id, nicks in service_data.items():
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
         svc_extra = extra_by_svc.get(svc_id, {})
 
-        # Собираем ники этого отдела в этом сервисе
         dept_nicks = []
         for nick in sorted(nicks):
             d = main_map.get(nick)
@@ -423,12 +446,11 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
 
         price = prices.get(svc_id, 0)
         cost = round(count * price, 2) if price else 0
-        total_users += count
         total_cost += cost
         cost_str = f"{cost:,.2f} ₽" if price else "—"
         price_str = f"{price:,.2f} ₽" if price else "—"
 
-        # Список пользователей для раскрытия
+        # Список пользователей — колонкой
         user_list_html = "".join(f"<li>{n}</li>" for n in dept_nicks)
         svc_id_safe = re.sub(r'\W', '_', svc_id)
 
@@ -455,26 +477,28 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
 <head>
 <meta charset="utf-8">
 <title>Биллинг — {dept}</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: #f8f9fb; color: #1a1a2e; padding: 40px; }}
-  .container {{ max-width: 800px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); padding: 40px; }}
-  .header {{ border-bottom: 2px solid #e8ecf1; padding-bottom: 20px; margin-bottom: 24px; }}
-  .header h1 {{ font-size: 22px; font-weight: 700; color: #1a1a2e; }}
-  .header .meta {{ font-size: 13px; color: #6b7280; margin-top: 6px; }}
+  body {{ font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif; background: {t['bg']}; color: {t['text']}; padding: 40px; }}
+  .container {{ max-width: 800px; margin: 0 auto; background: {t['card']}; border-radius: 16px; box-shadow: 0 4px 24px rgba(124,58,237,0.06); padding: 44px; }}
+  .header {{ border-bottom: 2px solid {t['border']}; padding-bottom: 20px; margin-bottom: 24px; }}
+  .header h1 {{ font-size: 21px; font-weight: 700; color: {t['text']}; }}
+  .header .meta {{ font-size: 13px; color: {t['text2']}; margin-top: 6px; }}
+  .accent-bar {{ width: 48px; height: 3px; background: {t['accent']}; border-radius: 2px; margin-bottom: 14px; }}
   table {{ width: 100%; border-collapse: collapse; margin-top: 16px; }}
-  th {{ background: #f1f5f9; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; padding: 10px 14px; text-align: left; border-bottom: 2px solid #e2e8f0; }}
-  td {{ padding: 10px 14px; border-bottom: 1px solid #f1f5f9; font-size: 14px; }}
+  th {{ background: {t['th_bg']}; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: {t['th_text']}; padding: 10px 14px; text-align: left; border-bottom: 2px solid {t['border']}; }}
+  td {{ padding: 11px 14px; border-bottom: 1px solid {t['border']}; font-size: 14px; color: {t['text']}; }}
   .svc-row {{ cursor: pointer; transition: background 0.15s; }}
-  .svc-row:hover {{ background: #f0f4ff; }}
-  .arrow {{ display: inline-block; font-size: 11px; margin-right: 6px; transition: transform 0.2s; color: #94a3b8; }}
+  .svc-row:hover {{ background: {t['hover']}; }}
+  .arrow {{ display: inline-block; font-size: 11px; margin-right: 6px; transition: transform 0.2s; color: {t['accent']}; }}
   .arrow.open {{ transform: rotate(90deg); }}
-  .user-list {{ list-style: none; display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 8px 0 8px 28px; }}
-  .user-list li {{ font-size: 13px; color: #475569; padding: 2px 0; }}
-  .user-row td {{ background: #f8fafc; padding: 4px 14px; border-bottom: 1px solid #e8ecf1; }}
-  .total {{ font-weight: 700; background: #f1f5f9; }}
-  .total td {{ border-top: 2px solid #e2e8f0; padding-top: 12px; }}
-  .footer {{ margin-top: 24px; font-size: 12px; color: #9ca3af; text-align: center; }}
+  .user-list {{ list-style: none; padding: 10px 0 10px 28px; margin: 0; }}
+  .user-list li {{ font-size: 13px; color: {t['user_text']}; padding: 3px 0; }}
+  .user-row td {{ background: {t['user_bg']}; padding: 0 14px; border-bottom: 1px solid {t['border']}; }}
+  .total {{ font-weight: 700; background: {t['total_bg']}; }}
+  .total td {{ border-top: 2px solid {t['border']}; padding-top: 12px; color: {total_text}; }}
+  .footer {{ margin-top: 28px; font-size: 11px; color: {t['text2']}; text-align: center; letter-spacing: 0.02em; }}
 </style>
 <script>
 function toggle(id) {{
@@ -493,8 +517,9 @@ function toggle(id) {{
 <body>
 <div class="container">
   <div class="header">
-    <h1>📊 Биллинг IT-сервисов — {dept}</h1>
-    <div class="meta">Период: {date_str} &nbsp;|&nbsp; Всего лицензий: {total_users}</div>
+    <div class="accent-bar"></div>
+    <h1>Биллинг IT-сервисов — {dept}</h1>
+    <div class="meta">Период: {date_str}</div>
   </div>
   <table>
     <thead>
@@ -504,13 +529,13 @@ function toggle(id) {{
       {rows_html}
       <tr class="total">
         <td>ИТОГО</td>
-        <td style="text-align:center">{total_users}</td>
+        <td></td>
         <td></td>
         <td style="text-align:right">{total_cost_str}</td>
       </tr>
     </tbody>
   </table>
-  <div class="footer">Сгенерировано Billing Automation Tool</div>
+  <div class="footer">Billing Automation Tool</div>
 </div>
 </body>
 </html>"""
@@ -552,7 +577,7 @@ def build_dept_excel(dept: str, service_data: dict, main_map: dict, extra_by_svc
     return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
 
 
-def build_all_dept_zip(db_users, extra_db, service_data, prices) -> bytes:
+def build_all_dept_zip(db_users, extra_db, service_data, prices, theme="light") -> bytes:
     """Генерация ZIP-архива со всеми отчётами по отделам (HTML + XLSX)."""
     main_map = dict(zip(db_users["nick"], db_users["cfo"]))
     extra_by_svc = {}
@@ -560,7 +585,6 @@ def build_all_dept_zip(db_users, extra_db, service_data, prices) -> bytes:
         for svc_id in entry.get("services", []):
             extra_by_svc.setdefault(svc_id, {})[nick] = entry["cfo"]
 
-    # Все ЦФО
     all_cfos = sorted(set(
         db_users["cfo"].tolist() +
         [e["cfo"] for e in extra_db.values()]
@@ -571,7 +595,7 @@ def build_all_dept_zip(db_users, extra_db, service_data, prices) -> bytes:
         for dept in all_cfos:
             safe_name = re.sub(r'[\\/:*?"<>|]', '_', dept)
 
-            html = build_dept_html(dept, service_data, main_map, extra_by_svc, prices)
+            html = build_dept_html(dept, service_data, main_map, extra_by_svc, prices, theme=theme)
             if html:
                 zf.writestr(f"{safe_name}/{safe_name}.html", html)
 
@@ -639,24 +663,41 @@ def main():
 
     with tab_params:
         st.subheader("💰 Цены за лицензию")
-        st.caption("Задайте стоимость одной лицензии для каждого сервиса. Используется в сводке и отчётах по отделам.")
+        st.caption("Задайте стоимость одной лицензии для каждого сервиса (₽). Используется в сводке и отчётах по отделам.")
 
         cols = st.columns(3)
         new_prices = {}
         for i, svc in enumerate(SERVICES):
             col = cols[i % 3]
-            val = col.number_input(
-                svc["name"], min_value=0.0, step=0.01, format="%.2f",
-                value=float(prices.get(svc["id"], 0)),
+            raw = col.text_input(
+                svc["name"],
+                value=str(prices.get(svc["id"], "0")),
                 key=f"price_{svc['id']}",
             )
-            if val > 0:
-                new_prices[svc["id"]] = val
+            try:
+                val = float(raw.replace(",", ".").strip())
+                if val > 0:
+                    new_prices[svc["id"]] = val
+            except ValueError:
+                pass
 
         if new_prices != prices:
             st.session_state.prices = new_prices
             prices = new_prices
             save_prices(prices)
+
+        st.divider()
+        st.subheader("🎨 Тема HTML-отчётов")
+        st.caption("Выберите оформление для HTML-отчётов по отделам.")
+
+        theme_choice = st.radio(
+            "Тема",
+            ["light", "dark", "accent"],
+            format_func=lambda x: {"light": "☀️ Светлая", "dark": "🌙 Тёмная", "accent": "💜 Акцентная"}[x],
+            horizontal=True,
+            key="theme_choice",
+        )
+        st.session_state.selected_theme = theme_choice
 
     # ─── Вкладка «Доп DB Users» ──────────────────────────────────────────────
 
@@ -777,8 +818,9 @@ def main():
                 )
 
         if export_depts:
+            selected_theme = st.session_state.get("selected_theme", "light")
             with st.spinner("Генерация отчётов по отделам..."):
-                zip_bytes = build_all_dept_zip(db_users, extra_db, service_data, prices)
+                zip_bytes = build_all_dept_zip(db_users, extra_db, service_data, prices, theme=selected_theme)
             st.download_button(
                 "💾 Скачать ZIP",
                 data=zip_bytes,
