@@ -7,30 +7,19 @@ from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 
+from services import SERVICES, SVC_ID_TO_NAME
+import periods
+import billing
+import analytics
+
 # ─── Конфигурация ─────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="⚡ Billing Automation", layout="wide")
 
-# Файлы для хранения настроек между сессиями
-EXTRA_DB_FILE = Path("extra_db_users.json")
-PRICES_FILE = Path("service_prices.json")
+# Тема оформления хранится в JSON (сознательно не в БД — решение из CLAUDE.md)
 THEME_FILE = Path("theme.json")
 
-# Реестр сервисов
-SERVICES = [
-    {"id": "google",      "name": "Google Workspace",  "accept": ["csv", "xlsx"]},
-    {"id": "miro",        "name": "Miro",              "accept": ["csv", "xlsx"]},
-    {"id": "github",      "name": "GitHub",            "accept": ["xlsx"]},
-    {"id": "copilot",     "name": "GitHub Copilot",    "accept": ["xlsx"]},
-    {"id": "m365",        "name": "M365",              "accept": ["xlsx"]},
-    {"id": "powerbi",     "name": "Power BI",          "accept": ["xlsx"]},
-    {"id": "mattermost",  "name": "Mattermost",        "accept": ["csv", "xlsx"]},
-    {"id": "testit",      "name": "TestIT",            "accept": ["csv", "xlsx"]},
-    {"id": "1c",          "name": "1С Лицензии",       "accept": ["xlsx"]},
-    {"id": "jira",        "name": "Jira + Confluence",  "accept": ["xlsx"]},
-]
-
-SVC_ID_TO_NAME = {s["id"]: s["name"] for s in SERVICES}
+# Реестр сервисов вынесен в services.py (см. импорт выше)
 
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
 
@@ -56,37 +45,7 @@ def read_file(uploaded, sheet_name=0) -> pd.DataFrame:
     else:
         return pd.read_excel(uploaded, sheet_name=sheet_name, dtype=str).fillna("")
 
-# ─── Хранение доп. пользователей ─────────────────────────────────────────────
-
-def load_extra_db() -> dict:
-    """Загрузка доп. пользователей из JSON. Структура: {nick: {cfo: str, services: [svc_id, ...]}}"""
-    if EXTRA_DB_FILE.exists():
-        try:
-            return json.loads(EXTRA_DB_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def save_extra_db(extra_db: dict):
-    """Сохранение доп. пользователей в JSON."""
-    EXTRA_DB_FILE.write_text(json.dumps(extra_db, ensure_ascii=False, indent=2), encoding="utf-8")
-
-# ─── Хранение цен ────────────────────────────────────────────────────────────
-
-def load_prices() -> dict:
-    """Загрузка цен за лицензию из JSON. Структура: {svc_id: float}"""
-    if PRICES_FILE.exists():
-        try:
-            return json.loads(PRICES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def save_prices(prices: dict):
-    """Сохранение цен за лицензию в JSON."""
-    PRICES_FILE.write_text(json.dumps(prices, ensure_ascii=False, indent=2), encoding="utf-8")
+# Доп. пользователи и цены теперь хранятся в БД (report_extra_users / report_prices) — см. billing.py
 
 
 def load_theme() -> str:
@@ -353,37 +312,45 @@ PARSERS = {
 
 # ─── Построение отчёта ────────────────────────────────────────────────────────
 
-def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, prices: dict) -> dict[str, pd.DataFrame]:
-    """Построение всех листов отчёта. Возвращает {имя_листа: DataFrame}."""
-    main_map = dict(zip(db_users["nick"], db_users["cfo"]))
+def _dept_of(row: dict) -> str:
+    """ЦФО записи биллинга: реальный cfo или «Не найден» для not_found."""
+    return row["cfo"] if row["source"] != "not_found" else "Не найден"
 
-    # Доп. пользователи по сервисам
-    extra_by_svc: dict[str, dict[str, str]] = {}
-    for nick, entry in extra_db.items():
-        for svc_id in entry.get("services", []):
-            extra_by_svc.setdefault(svc_id, {})[nick] = entry["cfo"]
 
-    all_cfos = sorted(set(db_users["cfo"].tolist() + [e["cfo"] for e in extra_db.values()]))
+def build_report(report_id: int) -> dict[str, pd.DataFrame]:
+    """Построение всех листов отчёта из данных периода (Вариант Б).
+
+    cfo/source берутся из billing_entries (посчитаны recompute_billing),
+    повторно в коде не вычисляются. Возвращает {имя_листа: DataFrame}.
+    """
+    entries = billing.get_entries(report_id)        # service_id -> [{nick,cfo,source}]
+    prices = billing.get_prices(report_id)          # {service_id: float}
+    employees = billing.get_employees_df(report_id)  # DataFrame[nick,cfo,dept]
+    extra_db = billing.get_extra_db(report_id)       # {nick:{cfo,services}}
+
+    # ЦФО для общей сводки: из справочника + из доп-юзеров
+    all_cfos = sorted(
+        set(employees["cfo"].tolist()) | {e["cfo"] for e in extra_db.values()}
+    )
+    # Сервисы в порядке реестра, только реально загруженные
+    svc_ids = [s["id"] for s in SERVICES if s["id"] in entries]
+
     sheets: dict[str, pd.DataFrame] = {}
     summary_data: dict[str, dict[str, int]] = {}
     all_not_found: dict[str, set] = {}
 
-    for svc_id, nicks in service_data.items():
+    for svc_id in svc_ids:
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
+        rows = entries[svc_id]
         dept_count: dict[str, int] = {}
         user_rows = []
 
-        for nick in nicks:
-            if nick in main_map:
-                dept = main_map[nick]
-            elif nick in svc_extra:
-                dept = svc_extra[nick]
-            else:
-                dept = "Не найден"
-                all_not_found.setdefault(nick, set()).add(svc_name)
+        for row in rows:
+            dept = _dept_of(row)
+            if row["source"] == "not_found":
+                all_not_found.setdefault(row["nick"], set()).add(svc_name)
             dept_count[dept] = dept_count.get(dept, 0) + 1
-            user_rows.append({"Nickname": nick, "ЦФО": dept})
+            user_rows.append({"Nickname": row["nick"], "ЦФО": dept})
 
         summary_data[svc_name] = dept_count
 
@@ -392,7 +359,7 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
             sheets[f"User list {svc_name}"] = pd.DataFrame(user_rows)
 
         # Сводная таблица
-        total = len(nicks)
+        total = len(rows)
         price = prices.get(svc_id, 0)
         pivot_rows = [
             {
@@ -412,7 +379,7 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
         sheets[f"Pivot {svc_name}"] = pd.DataFrame(pivot_rows)
 
     # Общая сводка
-    svc_names = [SVC_ID_TO_NAME.get(sid, sid) for sid in service_data]
+    svc_names = [SVC_ID_TO_NAME.get(sid, sid) for sid in svc_ids]
     summary_rows = []
     for dept in all_cfos:
         row = {"ЦФО": dept}
@@ -427,7 +394,7 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
     # Строка стоимости по сервисам
     cost_row = {"ЦФО": "Стоимость"}
     has_any_price = False
-    for svc_id in service_data:
+    for svc_id in svc_ids:
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
         price = prices.get(svc_id, 0)
         total_count = sum(summary_data.get(svc_name, {}).values())
@@ -444,29 +411,25 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
     if nf_rows:
         sheets["Не найдены"] = pd.DataFrame(nf_rows)
 
-    # Доп DB по сервисам
-    for nick, entry in extra_db.items():
-        for svc_id in entry.get("services", []):
-            svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-            sheet_name = f"Доп DB {svc_name}"
-            if sheet_name not in sheets:
-                sheets[sheet_name] = pd.DataFrame(columns=["Nickname", "ЦФО"])
-            sheets[sheet_name] = pd.concat(
-                [sheets[sheet_name], pd.DataFrame([{"Nickname": nick, "ЦФО": entry["cfo"]}])],
-                ignore_index=True,
-            )
+    # Доп DB по сервисам (из записей source='extra')
+    for svc_id in svc_ids:
+        svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
+        extra_rows = [
+            {"Nickname": r["nick"], "ЦФО": r["cfo"]}
+            for r in entries[svc_id] if r["source"] == "extra"
+        ]
+        if extra_rows:
+            sheets[f"Доп DB {svc_name}"] = pd.DataFrame(extra_rows)
 
     # Общий список: основной справочник + доп. пользователи
-    db_rows = db_users[["nick", "cfo", "dept"]].rename(
+    db_rows = employees[["nick", "cfo", "dept"]].rename(
         columns={"nick": "Nickname", "cfo": "ЦФО", "dept": "Подразделение"}
     ).copy()
     db_rows["Источник"] = "1С"
-    extra_nicks_added = set()
-    extra_rows_list = []
-    for nick, entry in extra_db.items():
-        if nick not in extra_nicks_added:
-            extra_rows_list.append({"Nickname": nick, "ЦФО": entry["cfo"], "Подразделение": "", "Источник": "Доп DB"})
-            extra_nicks_added.add(nick)
+    extra_rows_list = [
+        {"Nickname": nick, "ЦФО": entry["cfo"], "Подразделение": "", "Источник": "Доп DB"}
+        for nick, entry in extra_db.items()
+    ]
     if extra_rows_list:
         db_rows = pd.concat([db_rows, pd.DataFrame(extra_rows_list)], ignore_index=True)
     db_rows = db_rows.sort_values("Nickname").reset_index(drop=True)
@@ -474,21 +437,15 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
 
     # Сводный лист в формате для финансов (все отделы, все сервисы)
     finance_rows = []
-    for svc_id, nicks in service_data.items():
+    for svc_id in svc_ids:
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
         price = prices.get(svc_id, 0)
-        for nick in sorted(nicks):
-            dept = main_map.get(nick)
-            if dept is None:
-                dept = svc_extra.get(nick)
-            if dept is None:
-                dept = "Не найден"
-            cost = round(price, 2) if price else ""
+        cost = round(price, 2) if price else ""
+        for row in entries[svc_id]:
             finance_rows.append({
                 "Продукты ТХ": f"ПО {svc_name}",
-                "Nickname / Наименование": nick,
-                "Потребитель": dept,
+                "Nickname / Наименование": row["nick"],
+                "Потребитель": _dept_of(row),
                 "Единица продукта": "1 лицензия",
                 "Количество": 1,
                 "Цена": cost,
@@ -518,7 +475,7 @@ def sheets_to_excel(sheets: dict[str, pd.DataFrame]) -> bytes:
 
 # ─── Генерация отчёта по отделу (HTML + XLSX) ────────────────────────────────
 
-def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict, theme: str = "light") -> str:
+def build_dept_html(dept: str, entries: dict, prices: dict, theme: str = "light") -> str:
     """Генерация HTML-отчёта для отдела. Темы: light, dark, accent."""
     date_str = datetime.now().strftime("%d.%m.%Y")
 
@@ -550,18 +507,13 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
     rows_html = ""
     total_cost = 0.0
 
-    for svc_id, nicks in service_data.items():
+    for svc in SERVICES:
+        svc_id = svc["id"]
+        if svc_id not in entries:
+            continue
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
 
-        dept_nicks = []
-        for nick in sorted(nicks):
-            d = main_map.get(nick)
-            if d is None:
-                d = svc_extra.get(nick)
-            if d == dept:
-                dept_nicks.append(nick)
-
+        dept_nicks = [r["nick"] for r in entries[svc_id] if _dept_of(r) == dept]
         count = len(dept_nicks)
         if count == 0:
             continue
@@ -664,22 +616,21 @@ function toggle(id) {{
     return html
 
 
-def build_dept_excel(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict) -> bytes:
+def build_dept_excel(dept: str, entries: dict, prices: dict) -> bytes:
     """Генерация Excel для отдела в формате для финансов."""
     all_rows = []
-    for svc_id, nicks in service_data.items():
+    for svc in SERVICES:
+        svc_id = svc["id"]
+        if svc_id not in entries:
+            continue
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
         price = prices.get(svc_id, 0)
-        for nick in sorted(nicks):
-            d = main_map.get(nick)
-            if d is None:
-                d = svc_extra.get(nick)
-            if d == dept:
-                cost = round(price, 2) if price else ""
+        cost = round(price, 2) if price else ""
+        for r in entries[svc_id]:
+            if _dept_of(r) == dept:
                 all_rows.append({
                     "Продукты ТХ": f"ПО {svc_name}",
-                    "Nickname / Наименование": nick,
+                    "Nickname / Наименование": r["nick"],
                     "Потребитель": dept,
                     "Единица продукта": "1 лицензия",
                     "Количество": 1,
@@ -699,43 +650,181 @@ def build_dept_excel(dept: str, service_data: dict, main_map: dict, extra_by_svc
     return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
 
 
-def build_all_dept_zip(db_users, extra_db, service_data, prices, theme="light") -> bytes:
+def build_all_dept_zip(report_id: int, theme="light") -> bytes:
     """Генерация ZIP-архива со всеми отчётами по отделам (HTML + XLSX)."""
-    main_map = dict(zip(db_users["nick"], db_users["cfo"]))
-    extra_by_svc = {}
-    for nick, entry in extra_db.items():
-        for svc_id in entry.get("services", []):
-            extra_by_svc.setdefault(svc_id, {})[nick] = entry["cfo"]
+    entries = billing.get_entries(report_id)
+    prices = billing.get_prices(report_id)
+    employees = billing.get_employees_df(report_id)
+    extra_db = billing.get_extra_db(report_id)
 
-    all_cfos = sorted(set(
-        db_users["cfo"].tolist() +
-        [e["cfo"] for e in extra_db.values()]
-    ))
+    all_cfos = sorted(
+        set(employees["cfo"].tolist()) | {e["cfo"] for e in extra_db.values()}
+    )
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for dept in all_cfos:
             safe_name = re.sub(r'[\\/:*?"<>|]', '_', dept)
 
-            html = build_dept_html(dept, service_data, main_map, extra_by_svc, prices, theme=theme)
+            html = build_dept_html(dept, entries, prices, theme=theme)
             if html:
                 zf.writestr(f"{safe_name}/{safe_name}.html", html)
 
-            xlsx = build_dept_excel(dept, service_data, main_map, extra_by_svc, prices)
+            xlsx = build_dept_excel(dept, entries, prices)
             zf.writestr(f"{safe_name}/{safe_name}.xlsx", xlsx)
 
     return buf.getvalue()
+
+# ─── Вкладка «История» (аналитика по периодам) ────────────────────────────────
+
+def render_history():
+    """Динамика по месяцам: потребление лицензий по ЦФО и доходность сервисов."""
+    st.subheader("📈 История по периодам")
+
+    rev = analytics.service_revenue()
+    if rev.empty:
+        st.info("Пока нет данных. Загрузите хотя бы один период с сервисами.")
+        return
+
+    rev = rev.copy()
+    rev["Сервис"] = rev["service_id"].map(lambda s: SVC_ID_TO_NAME.get(s, s))
+
+    # ─── Доходность сервисов ──────────────────────────────────────────────────
+    st.markdown("#### 💰 Доходность сервисов")
+    cost_pivot = rev.pivot_table(
+        index="month", columns="Сервис", values="cost", aggfunc="sum", fill_value=0
+    ).sort_index()
+    cost_pivot["ИТОГО"] = cost_pivot.sum(axis=1)
+
+    total_by_month = cost_pivot["ИТОГО"]
+    st.caption("Общая стоимость лицензий по месяцам (₽)")
+    st.line_chart(total_by_month)
+
+    st.caption("Стоимость по сервисам (₽)")
+    chart_cols = [c for c in cost_pivot.columns if c != "ИТОГО"]
+    st.line_chart(cost_pivot[chart_cols])
+    st.dataframe(cost_pivot, use_container_width=True)
+
+    # Кол-во лицензий по сервисам
+    with st.expander("Кол-во лицензий по сервисам"):
+        lic_pivot = rev.pivot_table(
+            index="month", columns="Сервис", values="licenses", aggfunc="sum", fill_value=0
+        ).sort_index()
+        lic_pivot["ИТОГО"] = lic_pivot.sum(axis=1)
+        st.dataframe(lic_pivot, use_container_width=True)
+
+    st.divider()
+
+    # ─── Потребление по ЦФО ───────────────────────────────────────────────────
+    st.markdown("#### 🏢 Потребление лицензий по ЦФО")
+    cons = analytics.cfo_consumption()
+
+    metric = st.radio(
+        "Показатель", ["Лицензии", "Стоимость, ₽"], horizontal=True, key="hist_cfo_metric"
+    )
+    value_col = "licenses" if metric == "Лицензии" else "cost"
+    cfo_pivot = cons.pivot_table(
+        index="month", columns="cfo", values=value_col, aggfunc="sum", fill_value=0
+    ).sort_index()
+    cfo_pivot["ИТОГО"] = cfo_pivot.sum(axis=1)
+    st.dataframe(cfo_pivot, use_container_width=True)
+
+
+# ─── Управление периодами ─────────────────────────────────────────────────────
+
+def render_period_controls():
+    """Блок выбора/создания/финализации периода в сайдбаре.
+
+    Устанавливает st.session_state.report_id (выбранный период) и
+    st.session_state.report_locked (True, если период финализирован → только чтение).
+    """
+    st.header("🗓 Период")
+
+    reports = periods.list_reports()
+
+    if reports:
+        # Выбор активного периода
+        labels = {
+            r["id"]: f"{r['month']} · {'🔒 финал' if r['status'] == 'finalized' else '✏️ draft'}"
+            for r in reports
+        }
+        ids = [r["id"] for r in reports]
+        # Сохраняем выбор между ререндерами
+        default_idx = 0
+        if st.session_state.get("report_id") in ids:
+            default_idx = ids.index(st.session_state["report_id"])
+
+        selected = st.selectbox(
+            "Активный период",
+            ids,
+            index=default_idx,
+            format_func=lambda i: labels[i],
+            key="period_select",
+        )
+        st.session_state.report_id = selected
+        current = next(r for r in reports if r["id"] == selected)
+        st.session_state.report_locked = current["status"] == "finalized"
+
+        # Действия над выбранным периодом
+        if current["status"] == "draft":
+            miss = periods.missing_services(selected)
+            if miss:
+                names = ", ".join(SVC_ID_TO_NAME.get(m, m) for m in miss)
+                st.caption(f"⚠️ Нет файлов: {names}")
+            if st.button("🔒 Финализировать", use_container_width=True, key="finalize_btn"):
+                periods.finalize_report(selected)
+                st.success(f"Период {current['month']} финализирован.")
+                st.rerun()
+        else:
+            st.info("🔒 Период финализирован — только чтение.")
+            if st.button("✏️ Вернуть в draft", use_container_width=True, key="reopen_btn"):
+                periods.reopen_report(selected)
+                st.rerun()
+    else:
+        st.caption("Периодов пока нет. Создайте первый ниже.")
+        st.session_state.report_id = None
+        st.session_state.report_locked = False
+
+    # Создание нового периода
+    with st.expander("➕ Новый период"):
+        draft = periods.get_open_draft()
+        if draft:
+            st.caption(
+                f"Нельзя создать новый период: есть незавершённый {draft['month']}. "
+                "Сначала финализируйте его."
+            )
+        else:
+            default_month = datetime.now().strftime("%Y-%m")
+            new_month = st.text_input("Месяц (YYYY-MM)", value=default_month, key="new_month")
+            if st.button("Создать", use_container_width=True, key="create_period_btn"):
+                try:
+                    new_id = periods.create_report(new_month.strip())
+                    st.session_state.report_id = new_id
+                    st.success(f"Период {new_month} создан.")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+
 
 # ─── Основное приложение ──────────────────────────────────────────────────────
 
 def main():
     # Инициализация состояния сессии
-    if "extra_db" not in st.session_state:
-        st.session_state.extra_db = load_extra_db()
-    if "prices" not in st.session_state:
-        st.session_state.prices = load_prices()
     if "selected_theme" not in st.session_state:
         st.session_state.selected_theme = load_theme()
+
+    # Скрываем служебные элементы Streamlit (тулбар Deploy/меню, футер, decoration)
+    st.markdown(
+        """
+        <style>
+        [data-testid="stToolbar"] { display: none !important; }
+        [data-testid="stDecoration"] { display: none !important; }
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # Применение CSS темы
     current_theme = st.session_state.selected_theme
@@ -744,12 +833,12 @@ def main():
     st.markdown("# ⚡ Billing Automation")
     st.caption("Автоматическое распределение лицензий по ЦФО")
 
-    extra_db = st.session_state.extra_db
-    prices = st.session_state.prices
-
     # ─── Боковая панель: загрузка файлов ──────────────────────────────────────
 
     with st.sidebar:
+        render_period_controls()
+        st.divider()
+
         st.header("📂 Файлы")
 
         db_file = st.file_uploader("Справочник сотрудников", type=["xlsx"], key="db_file")
@@ -765,27 +854,81 @@ def main():
 
     # ─── Вкладки основного интерфейса ─────────────────────────────────────────
 
-    tab_main, tab_params, tab_extra = st.tabs(["📊 Отчёт", "⚙️ Параметры", "👥 Доп DB Users"])
+    tab_main, tab_history, tab_params, tab_extra = st.tabs(
+        ["📊 Отчёт", "📈 История", "⚙️ Параметры", "👥 Доп DB Users"]
+    )
 
-    # ─── Парсинг справочника ──────────────────────────────────────────────────
+    report_id = st.session_state.get("report_id")
+    report_locked = st.session_state.get("report_locked", False)
 
+    # ─── Парсинг справочника → снимок в report_employees ───────────────────────
+
+    if db_file and report_id is not None and not report_locked:
+        db_sig = f"{db_file.name}:{db_file.size}"
+        if st.session_state.get("saved_sig_db") != (report_id, db_sig):
+            try:
+                parsed = parse_db_users(db_file)
+                n = billing.save_employees(report_id, parsed)
+                st.session_state["saved_sig_db"] = (report_id, db_sig)
+                st.toast(f"Справочник: сохранено {n} сотрудников.")
+            except Exception as e:
+                st.error(f"Ошибка чтения справочника: {e}")
+    elif db_file and report_id is None:
+        st.warning("Справочник: выберите/создайте период, чтобы сохранить.")
+
+    # Справочник периода — из БД (DataFrame[nick, cfo, dept]) или None, если пуст
     db_users = None
-    if db_file:
-        try:
-            db_users = parse_db_users(db_file)
-        except Exception as e:
-            st.error(f"Ошибка чтения справочника: {e}")
+    if report_id is not None and billing.has_employees(report_id):
+        db_users = billing.get_employees_df(report_id)
 
-    # ─── Парсинг сервисов ─────────────────────────────────────────────────────
+    # ─── Парсинг сервисов → запись в БД (Вариант А) ───────────────────────────
+    # Ники сервиса пишутся в billing_entries выбранного периода. cfo/source
+    # считаются позже (при формировании отчёта/финализации).
 
-    service_data = {}
     for svc in SERVICES:
         uploaded = svc_files.get(svc["id"])
-        if uploaded:
-            try:
-                service_data[svc["id"]] = PARSERS[svc["id"]](uploaded)
-            except Exception as e:
-                st.error(f"Ошибка {svc['name']}: {e}")
+        if not uploaded:
+            continue
+
+        # Сигнатура файла — чтобы не перезаписывать БД на каждом ререндере
+        sig = f"{uploaded.name}:{uploaded.size}"
+        sig_key = f"saved_sig_{svc['id']}"
+
+        if report_id is None:
+            st.warning(f"{svc['name']}: выберите/создайте период, чтобы сохранить файл.")
+            continue
+        if report_locked:
+            st.warning(f"{svc['name']}: период финализирован — загрузка заблокирована.")
+            continue
+        if st.session_state.get(sig_key) == (report_id, sig):
+            continue  # этот файл уже сохранён в этот период
+
+        try:
+            nicks = PARSERS[svc["id"]](uploaded)
+            n = billing.save_service_upload(report_id, svc["id"], uploaded.name, nicks)
+            st.session_state[sig_key] = (report_id, sig)
+            st.toast(f"{svc['name']}: сохранено {n} польз.")
+        except Exception as e:
+            st.error(f"Ошибка {svc['name']}: {e}")
+
+    # Источник истины для отчёта — данные периода из БД
+    service_data = billing.get_service_nicks(report_id) if report_id else {}
+
+    # Доп-юзеры периода из БД ({nick: {cfo, services:[...]}})
+    extra_db = billing.get_extra_db(report_id) if report_id else {}
+
+    # Цены периода из БД ({service_id: float})
+    prices = billing.get_prices(report_id) if report_id else {}
+
+    # Пересчёт cfo/source в billing_entries по справочнику и доп-юзерам.
+    # Только в draft — финализированный период менять нельзя.
+    if report_id is not None and not report_locked:
+        billing.recompute_billing(report_id)
+
+    # ─── Вкладка «История» ────────────────────────────────────────────────────
+
+    with tab_history:
+        render_history()
 
     # ─── Вкладка «Параметры» ─────────────────────────────────────────────────
 
@@ -793,26 +936,33 @@ def main():
         st.subheader("💰 Цены за лицензию")
         st.caption("Задайте стоимость одной лицензии для каждого сервиса (₽). Используется в сводке и отчётах по отделам.")
 
-        cols = st.columns(3)
-        new_prices = {}
-        for i, svc in enumerate(SERVICES):
-            col = cols[i % 3]
-            raw = col.text_input(
-                svc["name"],
-                value=str(prices.get(svc["id"], "0")),
-                key=f"price_{svc['id']}",
-            )
-            try:
-                val = float(raw.replace(",", ".").strip())
-                if val > 0:
-                    new_prices[svc["id"]] = val
-            except ValueError:
-                pass
+        if report_id is None:
+            st.info("Выберите период, чтобы задать цены.")
+        else:
+            if report_locked:
+                st.info("🔒 Период финализирован — цены только для чтения.")
 
-        if new_prices != prices:
-            st.session_state.prices = new_prices
-            prices = new_prices
-            save_prices(prices)
+            cols = st.columns(3)
+            new_prices = {}
+            for i, svc in enumerate(SERVICES):
+                col = cols[i % 3]
+                raw = col.text_input(
+                    svc["name"],
+                    value=str(prices.get(svc["id"], "0")),
+                    key=f"price_{svc['id']}",
+                    disabled=report_locked,
+                )
+                try:
+                    val = float(raw.replace(",", ".").strip())
+                    if val > 0:
+                        new_prices[svc["id"]] = val
+                except ValueError:
+                    pass
+
+            # Сохраняем в БД только при реальном изменении и в draft
+            if not report_locked and new_prices != prices:
+                billing.set_prices(report_id, new_prices)
+                prices = new_prices
 
         st.divider()
         st.subheader("🎨 Тема оформления")
@@ -846,9 +996,8 @@ def main():
             if entries:
                 st.subheader(f"📋 Доп DB Users ({len(entries)})")
                 st.dataframe(pd.DataFrame(entries).sort_values("Nickname"), use_container_width=True, hide_index=True, height=300)
-                if st.button("🗑 Очистить все", key="clear_extra"):
-                    st.session_state.extra_db = {}
-                    save_extra_db({})
+                if st.button("🗑 Очистить все", key="clear_extra", disabled=report_locked):
+                    billing.clear_extra_users(report_id)
                     st.rerun()
         else:
             st.info("Доп. пользователи появятся после загрузки сервисов — те, кого нет в справочнике.")
@@ -866,7 +1015,10 @@ def main():
                 svc_summary = " · ".join(f"{SVC_ID_TO_NAME[sid]}: {len(n)}" for sid, n in service_data.items())
                 st.caption(svc_summary)
         else:
-            st.warning("Загрузите справочник сотрудников и хотя бы один сервис в боковой панели ←")
+            if report_id is None:
+                st.warning("Выберите или создайте период в боковой панели ←")
+            else:
+                st.warning("Загрузите справочник сотрудников и хотя бы один сервис в боковой панели ←")
             return
 
         if not service_data:
@@ -904,13 +1056,9 @@ def main():
                 c1, c2 = st.columns([2, 1])
                 bulk_cfo = c1.selectbox("ЦФО для всех отображённых", ["—"] + all_cfos, key="bulk_cfo")
                 if bulk_cfo != "—":
-                    if c2.button(f"Назначить ({len(filtered)})", key="bulk_assign"):
+                    if c2.button(f"Назначить ({len(filtered)})", key="bulk_assign", disabled=report_locked):
                         for nick, svc_ids in filtered.items():
-                            existing = extra_db.get(nick, {"cfo": bulk_cfo, "services": []})
-                            merged = list(set(existing.get("services", []) + list(svc_ids)))
-                            extra_db[nick] = {"cfo": bulk_cfo, "services": merged}
-                        save_extra_db(extra_db)
-                        st.session_state.extra_db = extra_db
+                            billing.set_extra_assignment(report_id, nick, bulk_cfo, list(svc_ids))
                         st.rerun()
 
                 # Индивидуальное назначение
@@ -922,11 +1070,8 @@ def main():
                     cols[1].caption(svc_names)
                     cfo_val = cols[2].selectbox("ЦФО", ["—"] + all_cfos, key=f"assign_{nick}")
                     if cfo_val != "—":
-                        existing = extra_db.get(nick, {"cfo": cfo_val, "services": []})
-                        merged = list(set(existing.get("services", []) + list(svc_ids)))
-                        extra_db[nick] = {"cfo": cfo_val, "services": merged}
-                        save_extra_db(extra_db)
-                        st.session_state.extra_db = extra_db
+                        billing.set_extra_assignment(report_id, nick, cfo_val, list(svc_ids))
+                        st.rerun()
 
         # ─── Кнопки генерации ─────────────────────────────────────────────────
 
@@ -941,7 +1086,7 @@ def main():
             export_depts = st.button("📁 По отделам (ZIP)", use_container_width=True)
 
         if generate or export:
-            sheets = build_report(db_users, extra_db, service_data, prices)
+            sheets = build_report(report_id)
             if generate:
                 st.session_state.report_sheets = sheets
             if export:
@@ -956,7 +1101,7 @@ def main():
         if export_depts:
             selected_theme = st.session_state.get("selected_theme", "light")
             with st.spinner("Генерация отчётов по отделам..."):
-                zip_bytes = build_all_dept_zip(db_users, extra_db, service_data, prices, theme=selected_theme)
+                zip_bytes = build_all_dept_zip(report_id, theme=selected_theme)
             st.download_button(
                 "💾 Скачать ZIP",
                 data=zip_bytes,
