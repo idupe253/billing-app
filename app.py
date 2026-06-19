@@ -15,8 +15,7 @@ import billing
 
 st.set_page_config(page_title="⚡ Billing Automation", layout="wide")
 
-# Файлы для хранения настроек между сессиями (цены/тема — мигрируют позже)
-PRICES_FILE = Path("service_prices.json")
+# Тема оформления хранится в JSON (сознательно не в БД — решение из CLAUDE.md)
 THEME_FILE = Path("theme.json")
 
 # Реестр сервисов вынесен в services.py (см. импорт выше)
@@ -45,23 +44,7 @@ def read_file(uploaded, sheet_name=0) -> pd.DataFrame:
     else:
         return pd.read_excel(uploaded, sheet_name=sheet_name, dtype=str).fillna("")
 
-# Доп. пользователи теперь хранятся в БД (report_extra_users) — см. billing.py
-
-# ─── Хранение цен ────────────────────────────────────────────────────────────
-
-def load_prices() -> dict:
-    """Загрузка цен за лицензию из JSON. Структура: {svc_id: float}"""
-    if PRICES_FILE.exists():
-        try:
-            return json.loads(PRICES_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def save_prices(prices: dict):
-    """Сохранение цен за лицензию в JSON."""
-    PRICES_FILE.write_text(json.dumps(prices, ensure_ascii=False, indent=2), encoding="utf-8")
+# Доп. пользователи и цены теперь хранятся в БД (report_extra_users / report_prices) — см. billing.py
 
 
 def load_theme() -> str:
@@ -781,8 +764,6 @@ def render_period_controls():
 
 def main():
     # Инициализация состояния сессии
-    if "prices" not in st.session_state:
-        st.session_state.prices = load_prices()
     if "selected_theme" not in st.session_state:
         st.session_state.selected_theme = load_theme()
 
@@ -792,8 +773,6 @@ def main():
 
     st.markdown("# ⚡ Billing Automation")
     st.caption("Автоматическое распределение лицензий по ЦФО")
-
-    prices = st.session_state.prices
 
     # ─── Боковая панель: загрузка файлов ──────────────────────────────────────
 
@@ -877,6 +856,9 @@ def main():
     # Доп-юзеры периода из БД ({nick: {cfo, services:[...]}})
     extra_db = billing.get_extra_db(report_id) if report_id else {}
 
+    # Цены периода из БД ({service_id: float})
+    prices = billing.get_prices(report_id) if report_id else {}
+
     # Пересчёт cfo/source в billing_entries по справочнику и доп-юзерам.
     # Только в draft — финализированный период менять нельзя.
     if report_id is not None and not report_locked:
@@ -888,26 +870,33 @@ def main():
         st.subheader("💰 Цены за лицензию")
         st.caption("Задайте стоимость одной лицензии для каждого сервиса (₽). Используется в сводке и отчётах по отделам.")
 
-        cols = st.columns(3)
-        new_prices = {}
-        for i, svc in enumerate(SERVICES):
-            col = cols[i % 3]
-            raw = col.text_input(
-                svc["name"],
-                value=str(prices.get(svc["id"], "0")),
-                key=f"price_{svc['id']}",
-            )
-            try:
-                val = float(raw.replace(",", ".").strip())
-                if val > 0:
-                    new_prices[svc["id"]] = val
-            except ValueError:
-                pass
+        if report_id is None:
+            st.info("Выберите период, чтобы задать цены.")
+        else:
+            if report_locked:
+                st.info("🔒 Период финализирован — цены только для чтения.")
 
-        if new_prices != prices:
-            st.session_state.prices = new_prices
-            prices = new_prices
-            save_prices(prices)
+            cols = st.columns(3)
+            new_prices = {}
+            for i, svc in enumerate(SERVICES):
+                col = cols[i % 3]
+                raw = col.text_input(
+                    svc["name"],
+                    value=str(prices.get(svc["id"], "0")),
+                    key=f"price_{svc['id']}",
+                    disabled=report_locked,
+                )
+                try:
+                    val = float(raw.replace(",", ".").strip())
+                    if val > 0:
+                        new_prices[svc["id"]] = val
+                except ValueError:
+                    pass
+
+            # Сохраняем в БД только при реальном изменении и в draft
+            if not report_locked and new_prices != prices:
+                billing.set_prices(report_id, new_prices)
+                prices = new_prices
 
         st.divider()
         st.subheader("🎨 Тема оформления")

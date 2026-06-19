@@ -154,6 +154,31 @@ def clear_extra_users(report_id: int) -> None:
         cur.execute("DELETE FROM report_extra_users WHERE report_id = %s;", (report_id,))
 
 
+# ─── Цены за лицензию (на период) ─────────────────────────────────────────────
+
+def get_prices(report_id: int) -> dict[str, float]:
+    """Цены периода: {service_id: float}. Только заданные (price > 0)."""
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT service_id, price FROM report_prices WHERE report_id = %s;",
+            (report_id,),
+        )
+        return {r["service_id"]: float(r["price"]) for r in cur.fetchall()}
+
+
+def set_prices(report_id: int, prices: dict[str, float]) -> None:
+    """Перезаписать цены периода. Передаются только сервисы с ценой > 0."""
+    with get_cursor(commit=True) as cur:
+        cur.execute("DELETE FROM report_prices WHERE report_id = %s;", (report_id,))
+        rows = [(report_id, sid, val) for sid, val in prices.items() if val > 0]
+        if rows:
+            execute_values(
+                cur,
+                "INSERT INTO report_prices (report_id, service_id, price) VALUES %s;",
+                rows,
+            )
+
+
 # ─── Пересчёт cfo/source в billing_entries ────────────────────────────────────
 
 def recompute_billing(report_id: int) -> None:
