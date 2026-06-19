@@ -1,0 +1,16 @@
+# Секреты — НЕ коммитить
+.env
+
+# Локальные данные приложения (мигрируют в PostgreSQL)
+extra_db_users.json
+service_prices.json
+theme.json
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
