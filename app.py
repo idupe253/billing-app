@@ -7,6 +7,8 @@ from io import BytesIO
 from pathlib import Path
 from datetime import datetime
 
+from services import SERVICES, SVC_ID_TO_NAME
+
 # ─── Конфигурация ─────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="⚡ Billing Automation", layout="wide")
@@ -16,21 +18,7 @@ EXTRA_DB_FILE = Path("extra_db_users.json")
 PRICES_FILE = Path("service_prices.json")
 THEME_FILE = Path("theme.json")
 
-# Реестр сервисов
-SERVICES = [
-    {"id": "google",      "name": "Google Workspace",  "accept": ["csv", "xlsx"]},
-    {"id": "miro",        "name": "Miro",              "accept": ["csv", "xlsx"]},
-    {"id": "github",      "name": "GitHub",            "accept": ["xlsx"]},
-    {"id": "copilot",     "name": "GitHub Copilot",    "accept": ["xlsx"]},
-    {"id": "m365",        "name": "M365",              "accept": ["xlsx"]},
-    {"id": "powerbi",     "name": "Power BI",          "accept": ["xlsx"]},
-    {"id": "mattermost",  "name": "Mattermost",        "accept": ["csv", "xlsx"]},
-    {"id": "testit",      "name": "TestIT",            "accept": ["csv", "xlsx"]},
-    {"id": "1c",          "name": "1С Лицензии",       "accept": ["xlsx"]},
-    {"id": "jira",        "name": "Jira + Confluence",  "accept": ["xlsx"]},
-]
-
-SVC_ID_TO_NAME = {s["id"]: s["name"] for s in SERVICES}
+# Реестр сервисов вынесен в services.py (см. импорт выше)
 
 # ─── Вспомогательные функции ──────────────────────────────────────────────────
 

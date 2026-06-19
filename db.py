@@ -61,3 +61,35 @@ def ping() -> str:
     with get_cursor() as cur:
         cur.execute("SELECT version();")
         return cur.fetchone()["version"]
+
+
+def apply_schema() -> None:
+    """Прогон schema.sql (идемпотентно — создаёт недостающие таблицы)."""
+    schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
+    with open(schema_path, encoding="utf-8") as f:
+        sql = f.read()
+    with get_cursor(commit=True) as cur:
+        cur.execute(sql)
+
+
+def sync_services() -> None:
+    """Синхронизация реестра сервисов (services.py) → таблица services.
+
+    Upsert по id: добавляет новые, обновляет name/accept_formats у существующих.
+    Сервисы не удаляются (на них завязана история billing_entries).
+    Вызывается при старте приложения и из migrate.py.
+    """
+    from services import SERVICES
+
+    with get_cursor(commit=True) as cur:
+        for svc in SERVICES:
+            cur.execute(
+                """
+                INSERT INTO services (id, name, accept_formats)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (id) DO UPDATE
+                    SET name = EXCLUDED.name,
+                        accept_formats = EXCLUDED.accept_formats;
+                """,
+                (svc["id"], svc["name"], ",".join(svc["accept"])),
+            )
