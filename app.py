@@ -10,6 +10,7 @@ from datetime import datetime
 from services import SERVICES, SVC_ID_TO_NAME
 import periods
 import billing
+import analytics
 
 # ─── Конфигурация ─────────────────────────────────────────────────────────────
 
@@ -674,6 +675,61 @@ def build_all_dept_zip(report_id: int, theme="light") -> bytes:
 
     return buf.getvalue()
 
+# ─── Вкладка «История» (аналитика по периодам) ────────────────────────────────
+
+def render_history():
+    """Динамика по месяцам: потребление лицензий по ЦФО и доходность сервисов."""
+    st.subheader("📈 История по периодам")
+
+    rev = analytics.service_revenue()
+    if rev.empty:
+        st.info("Пока нет данных. Загрузите хотя бы один период с сервисами.")
+        return
+
+    rev = rev.copy()
+    rev["Сервис"] = rev["service_id"].map(lambda s: SVC_ID_TO_NAME.get(s, s))
+
+    # ─── Доходность сервисов ──────────────────────────────────────────────────
+    st.markdown("#### 💰 Доходность сервисов")
+    cost_pivot = rev.pivot_table(
+        index="month", columns="Сервис", values="cost", aggfunc="sum", fill_value=0
+    ).sort_index()
+    cost_pivot["ИТОГО"] = cost_pivot.sum(axis=1)
+
+    total_by_month = cost_pivot["ИТОГО"]
+    st.caption("Общая стоимость лицензий по месяцам (₽)")
+    st.line_chart(total_by_month)
+
+    st.caption("Стоимость по сервисам (₽)")
+    chart_cols = [c for c in cost_pivot.columns if c != "ИТОГО"]
+    st.line_chart(cost_pivot[chart_cols])
+    st.dataframe(cost_pivot, use_container_width=True)
+
+    # Кол-во лицензий по сервисам
+    with st.expander("Кол-во лицензий по сервисам"):
+        lic_pivot = rev.pivot_table(
+            index="month", columns="Сервис", values="licenses", aggfunc="sum", fill_value=0
+        ).sort_index()
+        lic_pivot["ИТОГО"] = lic_pivot.sum(axis=1)
+        st.dataframe(lic_pivot, use_container_width=True)
+
+    st.divider()
+
+    # ─── Потребление по ЦФО ───────────────────────────────────────────────────
+    st.markdown("#### 🏢 Потребление лицензий по ЦФО")
+    cons = analytics.cfo_consumption()
+
+    metric = st.radio(
+        "Показатель", ["Лицензии", "Стоимость, ₽"], horizontal=True, key="hist_cfo_metric"
+    )
+    value_col = "licenses" if metric == "Лицензии" else "cost"
+    cfo_pivot = cons.pivot_table(
+        index="month", columns="cfo", values=value_col, aggfunc="sum", fill_value=0
+    ).sort_index()
+    cfo_pivot["ИТОГО"] = cfo_pivot.sum(axis=1)
+    st.dataframe(cfo_pivot, use_container_width=True)
+
+
 # ─── Управление периодами ─────────────────────────────────────────────────────
 
 def render_period_controls():
@@ -785,7 +841,9 @@ def main():
 
     # ─── Вкладки основного интерфейса ─────────────────────────────────────────
 
-    tab_main, tab_params, tab_extra = st.tabs(["📊 Отчёт", "⚙️ Параметры", "👥 Доп DB Users"])
+    tab_main, tab_history, tab_params, tab_extra = st.tabs(
+        ["📊 Отчёт", "📈 История", "⚙️ Параметры", "👥 Доп DB Users"]
+    )
 
     report_id = st.session_state.get("report_id")
     report_locked = st.session_state.get("report_locked", False)
@@ -853,6 +911,11 @@ def main():
     # Только в draft — финализированный период менять нельзя.
     if report_id is not None and not report_locked:
         billing.recompute_billing(report_id)
+
+    # ─── Вкладка «История» ────────────────────────────────────────────────────
+
+    with tab_history:
+        render_history()
 
     # ─── Вкладка «Параметры» ─────────────────────────────────────────────────
 
