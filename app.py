@@ -9,6 +9,7 @@ from datetime import datetime
 
 from services import SERVICES, SVC_ID_TO_NAME
 import periods
+import billing
 
 # ─── Конфигурация ─────────────────────────────────────────────────────────────
 
@@ -844,16 +845,41 @@ def main():
         except Exception as e:
             st.error(f"Ошибка чтения справочника: {e}")
 
-    # ─── Парсинг сервисов ─────────────────────────────────────────────────────
+    # ─── Парсинг сервисов → запись в БД (Вариант А) ───────────────────────────
+    # Ники сервиса пишутся в billing_entries выбранного периода. cfo/source
+    # считаются позже (при формировании отчёта/финализации).
 
-    service_data = {}
+    report_id = st.session_state.get("report_id")
+    report_locked = st.session_state.get("report_locked", False)
+
     for svc in SERVICES:
         uploaded = svc_files.get(svc["id"])
-        if uploaded:
-            try:
-                service_data[svc["id"]] = PARSERS[svc["id"]](uploaded)
-            except Exception as e:
-                st.error(f"Ошибка {svc['name']}: {e}")
+        if not uploaded:
+            continue
+
+        # Сигнатура файла — чтобы не перезаписывать БД на каждом ререндере
+        sig = f"{uploaded.name}:{uploaded.size}"
+        sig_key = f"saved_sig_{svc['id']}"
+
+        if report_id is None:
+            st.warning(f"{svc['name']}: выберите/создайте период, чтобы сохранить файл.")
+            continue
+        if report_locked:
+            st.warning(f"{svc['name']}: период финализирован — загрузка заблокирована.")
+            continue
+        if st.session_state.get(sig_key) == (report_id, sig):
+            continue  # этот файл уже сохранён в этот период
+
+        try:
+            nicks = PARSERS[svc["id"]](uploaded)
+            n = billing.save_service_upload(report_id, svc["id"], uploaded.name, nicks)
+            st.session_state[sig_key] = (report_id, sig)
+            st.toast(f"{svc['name']}: сохранено {n} польз.")
+        except Exception as e:
+            st.error(f"Ошибка {svc['name']}: {e}")
+
+    # Источник истины для отчёта — данные периода из БД
+    service_data = billing.get_service_nicks(report_id) if report_id else {}
 
     # ─── Вкладка «Параметры» ─────────────────────────────────────────────────
 
