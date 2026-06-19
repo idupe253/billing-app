@@ -813,6 +813,19 @@ def main():
     if "selected_theme" not in st.session_state:
         st.session_state.selected_theme = load_theme()
 
+    # Скрываем служебные элементы Streamlit (тулбар Deploy/меню, футер, decoration)
+    st.markdown(
+        """
+        <style>
+        [data-testid="stToolbar"] { display: none !important; }
+        [data-testid="stDecoration"] { display: none !important; }
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # Применение CSS темы
     current_theme = st.session_state.selected_theme
     st.markdown(STREAMLIT_THEMES.get(current_theme, STREAMLIT_THEMES["accent"]), unsafe_allow_html=True)
