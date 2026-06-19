@@ -311,37 +311,45 @@ PARSERS = {
 
 # ─── Построение отчёта ────────────────────────────────────────────────────────
 
-def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, prices: dict) -> dict[str, pd.DataFrame]:
-    """Построение всех листов отчёта. Возвращает {имя_листа: DataFrame}."""
-    main_map = dict(zip(db_users["nick"], db_users["cfo"]))
+def _dept_of(row: dict) -> str:
+    """ЦФО записи биллинга: реальный cfo или «Не найден» для not_found."""
+    return row["cfo"] if row["source"] != "not_found" else "Не найден"
 
-    # Доп. пользователи по сервисам
-    extra_by_svc: dict[str, dict[str, str]] = {}
-    for nick, entry in extra_db.items():
-        for svc_id in entry.get("services", []):
-            extra_by_svc.setdefault(svc_id, {})[nick] = entry["cfo"]
 
-    all_cfos = sorted(set(db_users["cfo"].tolist() + [e["cfo"] for e in extra_db.values()]))
+def build_report(report_id: int) -> dict[str, pd.DataFrame]:
+    """Построение всех листов отчёта из данных периода (Вариант Б).
+
+    cfo/source берутся из billing_entries (посчитаны recompute_billing),
+    повторно в коде не вычисляются. Возвращает {имя_листа: DataFrame}.
+    """
+    entries = billing.get_entries(report_id)        # service_id -> [{nick,cfo,source}]
+    prices = billing.get_prices(report_id)          # {service_id: float}
+    employees = billing.get_employees_df(report_id)  # DataFrame[nick,cfo,dept]
+    extra_db = billing.get_extra_db(report_id)       # {nick:{cfo,services}}
+
+    # ЦФО для общей сводки: из справочника + из доп-юзеров
+    all_cfos = sorted(
+        set(employees["cfo"].tolist()) | {e["cfo"] for e in extra_db.values()}
+    )
+    # Сервисы в порядке реестра, только реально загруженные
+    svc_ids = [s["id"] for s in SERVICES if s["id"] in entries]
+
     sheets: dict[str, pd.DataFrame] = {}
     summary_data: dict[str, dict[str, int]] = {}
     all_not_found: dict[str, set] = {}
 
-    for svc_id, nicks in service_data.items():
+    for svc_id in svc_ids:
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
+        rows = entries[svc_id]
         dept_count: dict[str, int] = {}
         user_rows = []
 
-        for nick in nicks:
-            if nick in main_map:
-                dept = main_map[nick]
-            elif nick in svc_extra:
-                dept = svc_extra[nick]
-            else:
-                dept = "Не найден"
-                all_not_found.setdefault(nick, set()).add(svc_name)
+        for row in rows:
+            dept = _dept_of(row)
+            if row["source"] == "not_found":
+                all_not_found.setdefault(row["nick"], set()).add(svc_name)
             dept_count[dept] = dept_count.get(dept, 0) + 1
-            user_rows.append({"Nickname": nick, "ЦФО": dept})
+            user_rows.append({"Nickname": row["nick"], "ЦФО": dept})
 
         summary_data[svc_name] = dept_count
 
@@ -350,7 +358,7 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
             sheets[f"User list {svc_name}"] = pd.DataFrame(user_rows)
 
         # Сводная таблица
-        total = len(nicks)
+        total = len(rows)
         price = prices.get(svc_id, 0)
         pivot_rows = [
             {
@@ -370,7 +378,7 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
         sheets[f"Pivot {svc_name}"] = pd.DataFrame(pivot_rows)
 
     # Общая сводка
-    svc_names = [SVC_ID_TO_NAME.get(sid, sid) for sid in service_data]
+    svc_names = [SVC_ID_TO_NAME.get(sid, sid) for sid in svc_ids]
     summary_rows = []
     for dept in all_cfos:
         row = {"ЦФО": dept}
@@ -385,7 +393,7 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
     # Строка стоимости по сервисам
     cost_row = {"ЦФО": "Стоимость"}
     has_any_price = False
-    for svc_id in service_data:
+    for svc_id in svc_ids:
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
         price = prices.get(svc_id, 0)
         total_count = sum(summary_data.get(svc_name, {}).values())
@@ -402,29 +410,25 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
     if nf_rows:
         sheets["Не найдены"] = pd.DataFrame(nf_rows)
 
-    # Доп DB по сервисам
-    for nick, entry in extra_db.items():
-        for svc_id in entry.get("services", []):
-            svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-            sheet_name = f"Доп DB {svc_name}"
-            if sheet_name not in sheets:
-                sheets[sheet_name] = pd.DataFrame(columns=["Nickname", "ЦФО"])
-            sheets[sheet_name] = pd.concat(
-                [sheets[sheet_name], pd.DataFrame([{"Nickname": nick, "ЦФО": entry["cfo"]}])],
-                ignore_index=True,
-            )
+    # Доп DB по сервисам (из записей source='extra')
+    for svc_id in svc_ids:
+        svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
+        extra_rows = [
+            {"Nickname": r["nick"], "ЦФО": r["cfo"]}
+            for r in entries[svc_id] if r["source"] == "extra"
+        ]
+        if extra_rows:
+            sheets[f"Доп DB {svc_name}"] = pd.DataFrame(extra_rows)
 
     # Общий список: основной справочник + доп. пользователи
-    db_rows = db_users[["nick", "cfo", "dept"]].rename(
+    db_rows = employees[["nick", "cfo", "dept"]].rename(
         columns={"nick": "Nickname", "cfo": "ЦФО", "dept": "Подразделение"}
     ).copy()
     db_rows["Источник"] = "1С"
-    extra_nicks_added = set()
-    extra_rows_list = []
-    for nick, entry in extra_db.items():
-        if nick not in extra_nicks_added:
-            extra_rows_list.append({"Nickname": nick, "ЦФО": entry["cfo"], "Подразделение": "", "Источник": "Доп DB"})
-            extra_nicks_added.add(nick)
+    extra_rows_list = [
+        {"Nickname": nick, "ЦФО": entry["cfo"], "Подразделение": "", "Источник": "Доп DB"}
+        for nick, entry in extra_db.items()
+    ]
     if extra_rows_list:
         db_rows = pd.concat([db_rows, pd.DataFrame(extra_rows_list)], ignore_index=True)
     db_rows = db_rows.sort_values("Nickname").reset_index(drop=True)
@@ -432,21 +436,15 @@ def build_report(db_users: pd.DataFrame, extra_db: dict, service_data: dict, pri
 
     # Сводный лист в формате для финансов (все отделы, все сервисы)
     finance_rows = []
-    for svc_id, nicks in service_data.items():
+    for svc_id in svc_ids:
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
         price = prices.get(svc_id, 0)
-        for nick in sorted(nicks):
-            dept = main_map.get(nick)
-            if dept is None:
-                dept = svc_extra.get(nick)
-            if dept is None:
-                dept = "Не найден"
-            cost = round(price, 2) if price else ""
+        cost = round(price, 2) if price else ""
+        for row in entries[svc_id]:
             finance_rows.append({
                 "Продукты ТХ": f"ПО {svc_name}",
-                "Nickname / Наименование": nick,
-                "Потребитель": dept,
+                "Nickname / Наименование": row["nick"],
+                "Потребитель": _dept_of(row),
                 "Единица продукта": "1 лицензия",
                 "Количество": 1,
                 "Цена": cost,
@@ -476,7 +474,7 @@ def sheets_to_excel(sheets: dict[str, pd.DataFrame]) -> bytes:
 
 # ─── Генерация отчёта по отделу (HTML + XLSX) ────────────────────────────────
 
-def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict, theme: str = "light") -> str:
+def build_dept_html(dept: str, entries: dict, prices: dict, theme: str = "light") -> str:
     """Генерация HTML-отчёта для отдела. Темы: light, dark, accent."""
     date_str = datetime.now().strftime("%d.%m.%Y")
 
@@ -508,18 +506,13 @@ def build_dept_html(dept: str, service_data: dict, main_map: dict, extra_by_svc:
     rows_html = ""
     total_cost = 0.0
 
-    for svc_id, nicks in service_data.items():
+    for svc in SERVICES:
+        svc_id = svc["id"]
+        if svc_id not in entries:
+            continue
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
 
-        dept_nicks = []
-        for nick in sorted(nicks):
-            d = main_map.get(nick)
-            if d is None:
-                d = svc_extra.get(nick)
-            if d == dept:
-                dept_nicks.append(nick)
-
+        dept_nicks = [r["nick"] for r in entries[svc_id] if _dept_of(r) == dept]
         count = len(dept_nicks)
         if count == 0:
             continue
@@ -622,22 +615,21 @@ function toggle(id) {{
     return html
 
 
-def build_dept_excel(dept: str, service_data: dict, main_map: dict, extra_by_svc: dict, prices: dict) -> bytes:
+def build_dept_excel(dept: str, entries: dict, prices: dict) -> bytes:
     """Генерация Excel для отдела в формате для финансов."""
     all_rows = []
-    for svc_id, nicks in service_data.items():
+    for svc in SERVICES:
+        svc_id = svc["id"]
+        if svc_id not in entries:
+            continue
         svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
-        svc_extra = extra_by_svc.get(svc_id, {})
         price = prices.get(svc_id, 0)
-        for nick in sorted(nicks):
-            d = main_map.get(nick)
-            if d is None:
-                d = svc_extra.get(nick)
-            if d == dept:
-                cost = round(price, 2) if price else ""
+        cost = round(price, 2) if price else ""
+        for r in entries[svc_id]:
+            if _dept_of(r) == dept:
                 all_rows.append({
                     "Продукты ТХ": f"ПО {svc_name}",
-                    "Nickname / Наименование": nick,
+                    "Nickname / Наименование": r["nick"],
                     "Потребитель": dept,
                     "Единица продукта": "1 лицензия",
                     "Количество": 1,
@@ -657,29 +649,27 @@ def build_dept_excel(dept: str, service_data: dict, main_map: dict, extra_by_svc
     return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
 
 
-def build_all_dept_zip(db_users, extra_db, service_data, prices, theme="light") -> bytes:
+def build_all_dept_zip(report_id: int, theme="light") -> bytes:
     """Генерация ZIP-архива со всеми отчётами по отделам (HTML + XLSX)."""
-    main_map = dict(zip(db_users["nick"], db_users["cfo"]))
-    extra_by_svc = {}
-    for nick, entry in extra_db.items():
-        for svc_id in entry.get("services", []):
-            extra_by_svc.setdefault(svc_id, {})[nick] = entry["cfo"]
+    entries = billing.get_entries(report_id)
+    prices = billing.get_prices(report_id)
+    employees = billing.get_employees_df(report_id)
+    extra_db = billing.get_extra_db(report_id)
 
-    all_cfos = sorted(set(
-        db_users["cfo"].tolist() +
-        [e["cfo"] for e in extra_db.values()]
-    ))
+    all_cfos = sorted(
+        set(employees["cfo"].tolist()) | {e["cfo"] for e in extra_db.values()}
+    )
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for dept in all_cfos:
             safe_name = re.sub(r'[\\/:*?"<>|]', '_', dept)
 
-            html = build_dept_html(dept, service_data, main_map, extra_by_svc, prices, theme=theme)
+            html = build_dept_html(dept, entries, prices, theme=theme)
             if html:
                 zf.writestr(f"{safe_name}/{safe_name}.html", html)
 
-            xlsx = build_dept_excel(dept, service_data, main_map, extra_by_svc, prices)
+            xlsx = build_dept_excel(dept, entries, prices)
             zf.writestr(f"{safe_name}/{safe_name}.xlsx", xlsx)
 
     return buf.getvalue()
@@ -1020,7 +1010,7 @@ def main():
             export_depts = st.button("📁 По отделам (ZIP)", use_container_width=True)
 
         if generate or export:
-            sheets = build_report(db_users, extra_db, service_data, prices)
+            sheets = build_report(report_id)
             if generate:
                 st.session_state.report_sheets = sheets
             if export:
@@ -1035,7 +1025,7 @@ def main():
         if export_depts:
             selected_theme = st.session_state.get("selected_theme", "light")
             with st.spinner("Генерация отчётов по отделам..."):
-                zip_bytes = build_all_dept_zip(db_users, extra_db, service_data, prices, theme=selected_theme)
+                zip_bytes = build_all_dept_zip(report_id, theme=selected_theme)
             st.download_button(
                 "💾 Скачать ZIP",
                 data=zip_bytes,

@@ -72,6 +72,27 @@ def get_service_nicks(report_id: int) -> dict[str, list[str]]:
         return result
 
 
+def get_entries(report_id: int) -> dict[str, list[dict]]:
+    """Записи биллинга с уже посчитанными cfo/source.
+
+    Возвращает service_id -> [{nick, cfo, source}, ...] (ники отсортированы).
+    Это источник истины для отчётов (Вариант Б): cfo/source берутся из БД,
+    повторно в коде отчёта не вычисляются.
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            "SELECT service_id, nick, cfo, source FROM billing_entries "
+            "WHERE report_id = %s ORDER BY service_id, nick;",
+            (report_id,),
+        )
+        result: dict[str, list[dict]] = {}
+        for r in cur.fetchall():
+            result.setdefault(r["service_id"], []).append(
+                {"nick": r["nick"], "cfo": r["cfo"], "source": r["source"]}
+            )
+        return result
+
+
 # ─── Справочник сотрудников (снимок на период) ────────────────────────────────
 
 def save_employees(report_id: int, df: pd.DataFrame) -> int:
