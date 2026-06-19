@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 
 from services import SERVICES, SVC_ID_TO_NAME
+import periods
 
 # ─── Конфигурация ─────────────────────────────────────────────────────────────
 
@@ -714,6 +715,82 @@ def build_all_dept_zip(db_users, extra_db, service_data, prices, theme="light") 
 
     return buf.getvalue()
 
+# ─── Управление периодами ─────────────────────────────────────────────────────
+
+def render_period_controls():
+    """Блок выбора/создания/финализации периода в сайдбаре.
+
+    Устанавливает st.session_state.report_id (выбранный период) и
+    st.session_state.report_locked (True, если период финализирован → только чтение).
+    """
+    st.header("🗓 Период")
+
+    reports = periods.list_reports()
+
+    if reports:
+        # Выбор активного периода
+        labels = {
+            r["id"]: f"{r['month']} · {'🔒 финал' if r['status'] == 'finalized' else '✏️ draft'}"
+            for r in reports
+        }
+        ids = [r["id"] for r in reports]
+        # Сохраняем выбор между ререндерами
+        default_idx = 0
+        if st.session_state.get("report_id") in ids:
+            default_idx = ids.index(st.session_state["report_id"])
+
+        selected = st.selectbox(
+            "Активный период",
+            ids,
+            index=default_idx,
+            format_func=lambda i: labels[i],
+            key="period_select",
+        )
+        st.session_state.report_id = selected
+        current = next(r for r in reports if r["id"] == selected)
+        st.session_state.report_locked = current["status"] == "finalized"
+
+        # Действия над выбранным периодом
+        if current["status"] == "draft":
+            miss = periods.missing_services(selected)
+            if miss:
+                names = ", ".join(SVC_ID_TO_NAME.get(m, m) for m in miss)
+                st.caption(f"⚠️ Нет файлов: {names}")
+            if st.button("🔒 Финализировать", use_container_width=True, key="finalize_btn"):
+                periods.finalize_report(selected)
+                st.success(f"Период {current['month']} финализирован.")
+                st.rerun()
+        else:
+            st.info("🔒 Период финализирован — только чтение.")
+            if st.button("✏️ Вернуть в draft", use_container_width=True, key="reopen_btn"):
+                periods.reopen_report(selected)
+                st.rerun()
+    else:
+        st.caption("Периодов пока нет. Создайте первый ниже.")
+        st.session_state.report_id = None
+        st.session_state.report_locked = False
+
+    # Создание нового периода
+    with st.expander("➕ Новый период"):
+        draft = periods.get_open_draft()
+        if draft:
+            st.caption(
+                f"Нельзя создать новый период: есть незавершённый {draft['month']}. "
+                "Сначала финализируйте его."
+            )
+        else:
+            default_month = datetime.now().strftime("%Y-%m")
+            new_month = st.text_input("Месяц (YYYY-MM)", value=default_month, key="new_month")
+            if st.button("Создать", use_container_width=True, key="create_period_btn"):
+                try:
+                    new_id = periods.create_report(new_month.strip())
+                    st.session_state.report_id = new_id
+                    st.success(f"Период {new_month} создан.")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+
+
 # ─── Основное приложение ──────────────────────────────────────────────────────
 
 def main():
@@ -738,6 +815,9 @@ def main():
     # ─── Боковая панель: загрузка файлов ──────────────────────────────────────
 
     with st.sidebar:
+        render_period_controls()
+        st.divider()
+
         st.header("📂 Файлы")
 
         db_file = st.file_uploader("Справочник сотрудников", type=["xlsx"], key="db_file")
