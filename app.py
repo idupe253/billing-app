@@ -15,8 +15,7 @@ import billing
 
 st.set_page_config(page_title="⚡ Billing Automation", layout="wide")
 
-# Файлы для хранения настроек между сессиями
-EXTRA_DB_FILE = Path("extra_db_users.json")
+# Файлы для хранения настроек между сессиями (цены/тема — мигрируют позже)
 PRICES_FILE = Path("service_prices.json")
 THEME_FILE = Path("theme.json")
 
@@ -46,21 +45,7 @@ def read_file(uploaded, sheet_name=0) -> pd.DataFrame:
     else:
         return pd.read_excel(uploaded, sheet_name=sheet_name, dtype=str).fillna("")
 
-# ─── Хранение доп. пользователей ─────────────────────────────────────────────
-
-def load_extra_db() -> dict:
-    """Загрузка доп. пользователей из JSON. Структура: {nick: {cfo: str, services: [svc_id, ...]}}"""
-    if EXTRA_DB_FILE.exists():
-        try:
-            return json.loads(EXTRA_DB_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
-
-
-def save_extra_db(extra_db: dict):
-    """Сохранение доп. пользователей в JSON."""
-    EXTRA_DB_FILE.write_text(json.dumps(extra_db, ensure_ascii=False, indent=2), encoding="utf-8")
+# Доп. пользователи теперь хранятся в БД (report_extra_users) — см. billing.py
 
 # ─── Хранение цен ────────────────────────────────────────────────────────────
 
@@ -796,8 +781,6 @@ def render_period_controls():
 
 def main():
     # Инициализация состояния сессии
-    if "extra_db" not in st.session_state:
-        st.session_state.extra_db = load_extra_db()
     if "prices" not in st.session_state:
         st.session_state.prices = load_prices()
     if "selected_theme" not in st.session_state:
@@ -810,7 +793,6 @@ def main():
     st.markdown("# ⚡ Billing Automation")
     st.caption("Автоматическое распределение лицензий по ЦФО")
 
-    extra_db = st.session_state.extra_db
     prices = st.session_state.prices
 
     # ─── Боковая панель: загрузка файлов ──────────────────────────────────────
@@ -836,21 +818,32 @@ def main():
 
     tab_main, tab_params, tab_extra = st.tabs(["📊 Отчёт", "⚙️ Параметры", "👥 Доп DB Users"])
 
-    # ─── Парсинг справочника ──────────────────────────────────────────────────
+    report_id = st.session_state.get("report_id")
+    report_locked = st.session_state.get("report_locked", False)
 
+    # ─── Парсинг справочника → снимок в report_employees ───────────────────────
+
+    if db_file and report_id is not None and not report_locked:
+        db_sig = f"{db_file.name}:{db_file.size}"
+        if st.session_state.get("saved_sig_db") != (report_id, db_sig):
+            try:
+                parsed = parse_db_users(db_file)
+                n = billing.save_employees(report_id, parsed)
+                st.session_state["saved_sig_db"] = (report_id, db_sig)
+                st.toast(f"Справочник: сохранено {n} сотрудников.")
+            except Exception as e:
+                st.error(f"Ошибка чтения справочника: {e}")
+    elif db_file and report_id is None:
+        st.warning("Справочник: выберите/создайте период, чтобы сохранить.")
+
+    # Справочник периода — из БД (DataFrame[nick, cfo, dept]) или None, если пуст
     db_users = None
-    if db_file:
-        try:
-            db_users = parse_db_users(db_file)
-        except Exception as e:
-            st.error(f"Ошибка чтения справочника: {e}")
+    if report_id is not None and billing.has_employees(report_id):
+        db_users = billing.get_employees_df(report_id)
 
     # ─── Парсинг сервисов → запись в БД (Вариант А) ───────────────────────────
     # Ники сервиса пишутся в billing_entries выбранного периода. cfo/source
     # считаются позже (при формировании отчёта/финализации).
-
-    report_id = st.session_state.get("report_id")
-    report_locked = st.session_state.get("report_locked", False)
 
     for svc in SERVICES:
         uploaded = svc_files.get(svc["id"])
@@ -880,6 +873,14 @@ def main():
 
     # Источник истины для отчёта — данные периода из БД
     service_data = billing.get_service_nicks(report_id) if report_id else {}
+
+    # Доп-юзеры периода из БД ({nick: {cfo, services:[...]}})
+    extra_db = billing.get_extra_db(report_id) if report_id else {}
+
+    # Пересчёт cfo/source в billing_entries по справочнику и доп-юзерам.
+    # Только в draft — финализированный период менять нельзя.
+    if report_id is not None and not report_locked:
+        billing.recompute_billing(report_id)
 
     # ─── Вкладка «Параметры» ─────────────────────────────────────────────────
 
@@ -940,9 +941,8 @@ def main():
             if entries:
                 st.subheader(f"📋 Доп DB Users ({len(entries)})")
                 st.dataframe(pd.DataFrame(entries).sort_values("Nickname"), use_container_width=True, hide_index=True, height=300)
-                if st.button("🗑 Очистить все", key="clear_extra"):
-                    st.session_state.extra_db = {}
-                    save_extra_db({})
+                if st.button("🗑 Очистить все", key="clear_extra", disabled=report_locked):
+                    billing.clear_extra_users(report_id)
                     st.rerun()
         else:
             st.info("Доп. пользователи появятся после загрузки сервисов — те, кого нет в справочнике.")
@@ -960,7 +960,10 @@ def main():
                 svc_summary = " · ".join(f"{SVC_ID_TO_NAME[sid]}: {len(n)}" for sid, n in service_data.items())
                 st.caption(svc_summary)
         else:
-            st.warning("Загрузите справочник сотрудников и хотя бы один сервис в боковой панели ←")
+            if report_id is None:
+                st.warning("Выберите или создайте период в боковой панели ←")
+            else:
+                st.warning("Загрузите справочник сотрудников и хотя бы один сервис в боковой панели ←")
             return
 
         if not service_data:
@@ -998,13 +1001,9 @@ def main():
                 c1, c2 = st.columns([2, 1])
                 bulk_cfo = c1.selectbox("ЦФО для всех отображённых", ["—"] + all_cfos, key="bulk_cfo")
                 if bulk_cfo != "—":
-                    if c2.button(f"Назначить ({len(filtered)})", key="bulk_assign"):
+                    if c2.button(f"Назначить ({len(filtered)})", key="bulk_assign", disabled=report_locked):
                         for nick, svc_ids in filtered.items():
-                            existing = extra_db.get(nick, {"cfo": bulk_cfo, "services": []})
-                            merged = list(set(existing.get("services", []) + list(svc_ids)))
-                            extra_db[nick] = {"cfo": bulk_cfo, "services": merged}
-                        save_extra_db(extra_db)
-                        st.session_state.extra_db = extra_db
+                            billing.set_extra_assignment(report_id, nick, bulk_cfo, list(svc_ids))
                         st.rerun()
 
                 # Индивидуальное назначение
@@ -1016,11 +1015,8 @@ def main():
                     cols[1].caption(svc_names)
                     cfo_val = cols[2].selectbox("ЦФО", ["—"] + all_cfos, key=f"assign_{nick}")
                     if cfo_val != "—":
-                        existing = extra_db.get(nick, {"cfo": cfo_val, "services": []})
-                        merged = list(set(existing.get("services", []) + list(svc_ids)))
-                        extra_db[nick] = {"cfo": cfo_val, "services": merged}
-                        save_extra_db(extra_db)
-                        st.session_state.extra_db = extra_db
+                        billing.set_extra_assignment(report_id, nick, cfo_val, list(svc_ids))
+                        st.rerun()
 
         # ─── Кнопки генерации ─────────────────────────────────────────────────
 
