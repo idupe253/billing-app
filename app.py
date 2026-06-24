@@ -37,6 +37,23 @@ def parse_cfo(val) -> str:
     return "ПП НЕО"
 
 
+def parse_price(raw: str):
+    """Парсинг цены из строки. Возвращает float или None, если не распознать.
+
+    Поддерживает разделители тысяч пробелами (в т.ч. неразрывными) и запятую
+    как десятичный разделитель: '1 200,50' → 1200.5, '581.78' → 581.78.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = re.sub(r"[\s  ]", "", s)  # убрать пробелы — разделители тысяч
+    s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def read_file(uploaded, sheet_name=0) -> pd.DataFrame:
     """Чтение загруженного файла (CSV или XLSX) в DataFrame."""
     name = uploaded.name.lower()
@@ -957,6 +974,7 @@ def main():
 
             cols = st.columns(3)
             new_prices = {}
+            invalid = []
             for i, svc in enumerate(SERVICES):
                 col = cols[i % 3]
                 raw = col.text_input(
@@ -965,12 +983,16 @@ def main():
                     key=f"price_{svc['id']}",
                     disabled=report_locked,
                 )
-                try:
-                    val = float(raw.replace(",", ".").strip())
-                    if val > 0:
-                        new_prices[svc["id"]] = val
-                except ValueError:
-                    pass
+                val = parse_price(raw)  # пробелы и запятая обрабатываются автоматически
+                if val is None:
+                    if (raw or "").strip() not in ("", "0"):
+                        invalid.append(svc["name"])
+                    continue
+                if val > 0:
+                    new_prices[svc["id"]] = val
+
+            if invalid:
+                st.warning("Не распознаны цены (проверьте формат): " + ", ".join(invalid))
 
             # Сохраняем в БД только при реальном изменении и в draft
             if not report_locked and new_prices != prices:
