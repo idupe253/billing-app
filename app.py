@@ -805,6 +805,7 @@ def render_period_controls():
         st.session_state.report_id = selected
         current = next(r for r in reports if r["id"] == selected)
         st.session_state.report_locked = current["status"] == "finalized"
+        st.session_state.report_month = current["month"]
 
         # Действия над выбранным периодом
         if current["status"] == "draft":
@@ -1047,17 +1048,37 @@ def main():
     # ─── Вкладка «Доп DB Users» ──────────────────────────────────────────────
 
     with tab_extra:
+        period_label = st.session_state.get("report_month", "—")
+        st.caption(f"Период: **{period_label}** · удаление действует только на этот период")
         if extra_db:
-            entries = []
-            for nick, entry in extra_db.items():
-                for svc_id in entry.get("services", []):
-                    entries.append({"Nickname": nick, "ЦФО": entry["cfo"], "Сервис": SVC_ID_TO_NAME.get(svc_id, svc_id)})
-            if entries:
-                st.subheader(f"📋 Доп DB Users ({len(entries)})")
-                st.dataframe(pd.DataFrame(entries).sort_values("Nickname"), use_container_width=True, hide_index=True, height=300)
-                if st.button("🗑 Очистить все", key="clear_extra", disabled=report_locked):
-                    billing.clear_extra_users(report_id)
+            st.subheader(f"📋 Доп DB Users ({len(extra_db)})")
+            if report_locked:
+                st.info("🔒 Период финализирован — удаление недоступно.")
+
+            # Поиск по нику (удобно при большом списке)
+            search = st.text_input("Поиск по нику", key="extra_search").strip().lower()
+
+            nicks = sorted(n for n in extra_db if not search or search in n.lower())
+            st.caption(f"Показано: {len(nicks)} из {len(extra_db)}")
+
+            for nick in nicks:
+                entry = extra_db[nick]
+                svc_names = ", ".join(
+                    SVC_ID_TO_NAME.get(s, s) for s in sorted(entry.get("services", []))
+                )
+                cols = st.columns([3, 2, 4, 1])
+                cols[0].markdown(f"**{nick}**")
+                cols[1].caption(entry["cfo"])
+                cols[2].caption(svc_names)
+                if cols[3].button("🗑", key=f"del_extra_{nick}", disabled=report_locked,
+                                  help="Удалить пользователя из доп. списка"):
+                    billing.delete_extra_user(report_id, nick)
                     st.rerun()
+
+            st.divider()
+            if st.button("🗑 Очистить все", key="clear_extra", disabled=report_locked):
+                billing.clear_extra_users(report_id)
+                st.rerun()
         else:
             st.info("Доп. пользователи появятся после загрузки сервисов — те, кого нет в справочнике.")
 

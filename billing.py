@@ -197,6 +197,18 @@ def clear_extra_users(report_id: int) -> None:
         cur.execute("DELETE FROM report_extra_users WHERE report_id = %s;", (report_id,))
 
 
+def delete_extra_user(report_id: int, nick: str) -> None:
+    """Удалить доп-пользователя из периода (все его назначения по сервисам).
+
+    billing_entries для этого ника станут not_found при следующем recompute_billing.
+    """
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM report_extra_users WHERE report_id = %s AND nick = %s;",
+            (report_id, nick),
+        )
+
+
 # ─── Цены за лицензию (на период) ─────────────────────────────────────────────
 
 def get_prices(report_id: int) -> dict[str, float]:
