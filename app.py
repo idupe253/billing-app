@@ -740,11 +740,35 @@ def render_history():
         "Показатель", ["Лицензии", "Стоимость, ₽"], horizontal=True, key="hist_cfo_metric"
     )
     value_col = "licenses" if metric == "Лицензии" else "cost"
-    cfo_pivot = cons.pivot_table(
-        index="month", columns="cfo", values=value_col, aggfunc="sum", fill_value=0
-    ).sort_index()
-    cfo_pivot["ИТОГО"] = cfo_pivot.sum(axis=1)
-    st.dataframe(cfo_pivot, use_container_width=True)
+
+    # Разбивка по сервисам за выбранный месяц: матрица ЦФО × Сервис
+    detail = analytics.cfo_service_consumption()
+    months_avail = sorted(detail["month"].unique().tolist(), reverse=True)
+    sel_month = st.selectbox("Месяц", months_avail, key="hist_cfo_month")
+
+    md = detail[detail["month"] == sel_month].copy()
+    md["Сервис"] = md["service_id"].map(lambda s: SVC_ID_TO_NAME.get(s, s))
+    # Порядок колонок-сервисов как в реестре
+    svc_order = [SVC_ID_TO_NAME.get(s["id"], s["id"]) for s in SERVICES
+                 if s["id"] in set(md["service_id"])]
+    matrix = md.pivot_table(
+        index="cfo", columns="Сервис", values=value_col, aggfunc="sum", fill_value=0
+    )
+    matrix = matrix.reindex(columns=svc_order, fill_value=0)
+    matrix["ИТОГО"] = matrix.sum(axis=1)
+    matrix = matrix.sort_values("ИТОГО", ascending=False)
+    # Строка итогов по сервисам
+    matrix.loc["ИТОГО"] = matrix.sum(axis=0)
+    st.caption(f"ЦФО × Сервис за {sel_month} ({metric.lower()})")
+    st.dataframe(matrix, use_container_width=True)
+
+    # Сводно по месяцам (итог по ЦФО без разбивки) — в сворачиваемом блоке
+    with st.expander("Сводно по месяцам (итог по ЦФО)"):
+        cfo_pivot = cons.pivot_table(
+            index="month", columns="cfo", values=value_col, aggfunc="sum", fill_value=0
+        ).sort_index()
+        cfo_pivot["ИТОГО"] = cfo_pivot.sum(axis=1)
+        st.dataframe(cfo_pivot, use_container_width=True)
 
 
 # ─── Управление периодами ─────────────────────────────────────────────────────

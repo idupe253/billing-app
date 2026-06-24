@@ -74,3 +74,37 @@ def cfo_consumption() -> pd.DataFrame:
     df["licenses"] = df["licenses"].astype(int)
     df["cost"] = df["cost"].astype(float).round(2)
     return df
+
+
+def cfo_service_consumption() -> pd.DataFrame:
+    """Потребление по ЦФО в разрезе сервисов и месяцев.
+
+    Колонки: month, cfo, service_id, licenses, cost.
+    cost = licenses_сервиса_у_ЦФО * цена (цена на сервис в периоде).
+    Не найденные (cfo='') сводятся в «Не найден».
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT r.month,
+                   b.cfo,
+                   b.service_id,
+                   COUNT(*)                   AS licenses,
+                   SUM(COALESCE(p.price, 0))  AS cost
+            FROM reports r
+            JOIN billing_entries b ON b.report_id = r.id
+            LEFT JOIN report_prices p
+                   ON p.report_id = r.id AND p.service_id = b.service_id
+            GROUP BY r.month, b.cfo, b.service_id
+            ORDER BY r.month, b.cfo, b.service_id;
+            """
+        )
+        rows = cur.fetchall()
+
+    df = pd.DataFrame(rows, columns=["month", "cfo", "service_id", "licenses", "cost"])
+    if df.empty:
+        return df
+    df["cfo"] = df["cfo"].replace("", "Не найден")
+    df["licenses"] = df["licenses"].astype(int)
+    df["cost"] = df["cost"].astype(float).round(2)
+    return df
