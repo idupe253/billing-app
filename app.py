@@ -1054,7 +1054,7 @@ def main():
         all_cfos = sorted(db_users["cfo"].unique().tolist())
 
         if unmatched:
-            with st.expander(f"⚠️ Не найдено в справочнике: {len(unmatched)}", expanded=False):
+            with st.expander(f"⚠️ Не найдено в справочнике: {len(unmatched)}", expanded=True):
                 svc_ids_in_unmatched = sorted(set(sid for sids in unmatched.values() for sid in sids))
                 filter_options = ["Все"] + [SVC_ID_TO_NAME.get(s, s) for s in svc_ids_in_unmatched]
                 selected_filter = st.selectbox("Фильтр", filter_options, key="unmatched_filter")
@@ -1074,16 +1074,29 @@ def main():
                             billing.set_extra_assignment(report_id, nick, bulk_cfo, list(svc_ids))
                         st.rerun()
 
-                # Индивидуальное назначение
-                for nick in sorted(filtered.keys()):
-                    svc_ids = filtered[nick]
-                    svc_names = ", ".join(SVC_ID_TO_NAME.get(s, s) for s in sorted(svc_ids))
-                    cols = st.columns([3, 3, 4])
-                    cols[0].markdown(f"**{nick}**")
-                    cols[1].caption(svc_names)
-                    cfo_val = cols[2].selectbox("ЦФО", ["—"] + all_cfos, key=f"assign_{nick}")
-                    if cfo_val != "—":
-                        billing.set_extra_assignment(report_id, nick, cfo_val, list(svc_ids))
+                # Индивидуальное назначение — в форме: выборы не вызывают rerun,
+                # запись в БД делается одним пакетом по кнопке «Сохранить».
+                with st.form("assign_form"):
+                    st.caption("Проставьте ЦФО и нажмите «Сохранить» — запись одним пакетом.")
+                    for nick in sorted(filtered.keys()):
+                        svc_ids = filtered[nick]
+                        svc_names = ", ".join(SVC_ID_TO_NAME.get(s, s) for s in sorted(svc_ids))
+                        cols = st.columns([3, 3, 4])
+                        cols[0].markdown(f"**{nick}**")
+                        cols[1].caption(svc_names)
+                        cols[2].selectbox("ЦФО", ["—"] + all_cfos, key=f"assign_{nick}")
+
+                    submitted = st.form_submit_button(
+                        f"💾 Сохранить назначения ({len(filtered)})", disabled=report_locked
+                    )
+                    if submitted:
+                        items = [
+                            (nick, st.session_state[f"assign_{nick}"], list(svc_ids))
+                            for nick, svc_ids in filtered.items()
+                            if st.session_state.get(f"assign_{nick}", "—") != "—"
+                        ]
+                        n = billing.set_extra_assignments_bulk(report_id, items)
+                        st.success(f"Сохранено назначений: {len(items)} (строк в БД: {n}).")
                         st.rerun()
 
         # ─── Кнопки генерации ─────────────────────────────────────────────────

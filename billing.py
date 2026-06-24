@@ -170,6 +170,28 @@ def set_extra_assignment(report_id: int, nick: str, cfo: str, service_ids: list[
         )
 
 
+def set_extra_assignments_bulk(report_id: int, items: list[tuple[str, str, list[str]]]) -> int:
+    """Пакетное назначение ЦФО доп-юзерам за одну запись в БД.
+
+    items: [(nick, cfo, [service_id, ...]), ...]. Возвращает число строк.
+    """
+    rows = [
+        (report_id, nick, sid, cfo)
+        for nick, cfo, service_ids in items
+        for sid in service_ids
+    ]
+    if not rows:
+        return 0
+    with get_cursor(commit=True) as cur:
+        execute_values(
+            cur,
+            "INSERT INTO report_extra_users (report_id, nick, service_id, cfo) VALUES %s "
+            "ON CONFLICT (report_id, service_id, nick) DO UPDATE SET cfo = EXCLUDED.cfo;",
+            rows,
+        )
+    return len(rows)
+
+
 def clear_extra_users(report_id: int) -> None:
     with get_cursor(commit=True) as cur:
         cur.execute("DELETE FROM report_extra_users WHERE report_id = %s;", (report_id,))
