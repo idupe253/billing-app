@@ -775,6 +775,19 @@ def render_period_controls():
                 periods.finalize_report(selected)
                 st.success(f"Период {current['month']} финализирован.")
                 st.rerun()
+
+            # Удаление периода (необратимо — удаляет все его данные)
+            confirm_del = st.checkbox("Подтвердить удаление", key="confirm_del")
+            if st.button(
+                "🗑 Удалить период",
+                use_container_width=True,
+                key="delete_btn",
+                disabled=not confirm_del,
+            ):
+                periods.delete_report(selected)
+                st.session_state.report_id = None
+                st.success(f"Период {current['month']} удалён.")
+                st.rerun()
         else:
             st.info("🔒 Период финализирован — только чтение.")
             if st.button("✏️ Вернуть в draft", use_container_width=True, key="reopen_btn"):

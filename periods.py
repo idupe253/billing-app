@@ -110,6 +110,19 @@ def reopen_report(report_id: int) -> None:
         )
 
 
+def delete_report(report_id: int) -> None:
+    """Удалить период (только в статусе draft).
+
+    Связанные данные (employees, extra_users, prices, uploads, billing_entries)
+    удаляются каскадно (ON DELETE CASCADE). Финализированный период не трогаем.
+    """
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM reports WHERE id = %s AND status = 'draft';",
+            (report_id,),
+        )
+
+
 def missing_services(report_id: int) -> list[str]:
     """Сервисы (id), по которым в периоде нет загруженных файлов.
 
