@@ -13,13 +13,24 @@ from psycopg2.extras import execute_values
 from db import get_cursor
 
 
-def save_service_upload(report_id: int, service_id: str, filename: str, nicks: list[str]) -> int:
+def save_service_upload(report_id: int, service_id: str, filename: str, records: list) -> int:
     """Сохранить выгрузку сервиса в период (перезапись).
 
+    records — список либо строк-ников, либо dict {"nick": str, "comment": str|None}.
     Удаляет прежние billing_entries и service_uploads по (период, сервис),
     вставляет новые. Ники уже очищены/дедуплицированы парсером.
     Возвращает число записанных ников.
     """
+    # Нормализация: приводим к [(nick, comment), ...]
+    rows = []
+    for item in records:
+        if isinstance(item, str):
+            nick, comment = item, None
+        else:
+            nick, comment = item.get("nick"), item.get("comment")
+        if nick:
+            rows.append((nick, comment))
+
     with get_cursor(commit=True) as cur:
         # Перезагрузка: убираем прежние данные сервиса в этом периоде
         cur.execute(
@@ -34,17 +45,17 @@ def save_service_upload(report_id: int, service_id: str, filename: str, nicks: l
         cur.execute(
             "INSERT INTO service_uploads (report_id, service_id, filename, row_count) "
             "VALUES (%s, %s, %s, %s);",
-            (report_id, service_id, filename, len(nicks)),
+            (report_id, service_id, filename, len(rows)),
         )
 
-        if nicks:
+        if rows:
             execute_values(
                 cur,
-                "INSERT INTO billing_entries (report_id, service_id, nick, cfo, source) "
+                "INSERT INTO billing_entries (report_id, service_id, nick, cfo, source, comment) "
                 "VALUES %s ON CONFLICT (report_id, service_id, nick) DO NOTHING;",
-                [(report_id, service_id, n, "", "pending") for n in nicks],
+                [(report_id, service_id, nick, "", "pending", comment) for nick, comment in rows],
             )
-    return len(nicks)
+    return len(rows)
 
 
 def get_upload_status(report_id: int) -> dict[str, dict]:
@@ -81,14 +92,15 @@ def get_entries(report_id: int) -> dict[str, list[dict]]:
     """
     with get_cursor() as cur:
         cur.execute(
-            "SELECT service_id, nick, cfo, source FROM billing_entries "
+            "SELECT service_id, nick, cfo, source, comment FROM billing_entries "
             "WHERE report_id = %s ORDER BY service_id, nick;",
             (report_id,),
         )
         result: dict[str, list[dict]] = {}
         for r in cur.fetchall():
             result.setdefault(r["service_id"], []).append(
-                {"nick": r["nick"], "cfo": r["cfo"], "source": r["source"]}
+                {"nick": r["nick"], "cfo": r["cfo"], "source": r["source"],
+                 "comment": r["comment"]}
             )
         return result
 

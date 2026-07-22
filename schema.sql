@@ -63,8 +63,12 @@ CREATE TABLE IF NOT EXISTS billing_entries (
     nick       VARCHAR NOT NULL,
     cfo        VARCHAR NOT NULL,
     source     VARCHAR NOT NULL,                       -- employee / extra / not_found
+    comment    VARCHAR,                                -- произвольная пометка (напр. роль Mattermost: guest/member)
     UNIQUE (report_id, service_id, nick)
 );
+
+-- Для уже существующих БД: добавить колонку comment, если её ещё нет
+ALTER TABLE billing_entries ADD COLUMN IF NOT EXISTS comment VARCHAR;
 
 -- Индекс для частых выборок по периоду+сервису
 CREATE INDEX IF NOT EXISTS idx_billing_report_service

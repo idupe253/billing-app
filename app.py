@@ -55,10 +55,16 @@ def parse_price(raw: str):
 
 
 def read_file(uploaded, sheet_name=0) -> pd.DataFrame:
-    """Чтение загруженного файла (CSV или XLSX) в DataFrame."""
+    """Чтение загруженного файла (CSV или XLSX) в DataFrame.
+
+    Для CSV разделитель определяется автоматически (запятая или точка с запятой),
+    BOM убирается (encoding utf-8-sig).
+    """
     name = uploaded.name.lower()
     if name.endswith(".csv"):
-        return pd.read_csv(uploaded, dtype=str).fillna("")
+        return pd.read_csv(
+            uploaded, dtype=str, sep=None, engine="python", encoding="utf-8-sig"
+        ).fillna("")
     else:
         return pd.read_excel(uploaded, sheet_name=sheet_name, dtype=str).fillna("")
 
@@ -290,12 +296,27 @@ def parse_powerbi(uploaded) -> list[str]:
     return sorted(set(nicks))
 
 
-def parse_mattermost(uploaded) -> list[str]:
-    """Mattermost: ник из столбца A (NickName), все пользователи."""
+def parse_mattermost(uploaded) -> list[dict]:
+    """Mattermost: ник из столбца B (Username), роль из столбца F (Roles).
+
+    Возвращает список dict {"nick", "comment"}, где comment — роль:
+    'guest' если в Roles есть system_guest, иначе 'member'. Все пользователи.
+    """
     df = read_file(uploaded)
-    col = "NickName" if "NickName" in df.columns else df.columns[0]
-    nicks = df[col].str.strip().str.lower().tolist()
-    return sorted(set(n for n in nicks if n))
+    user_col = "Username" if "Username" in df.columns else df.columns[1]
+    roles_col = "Roles" if "Roles" in df.columns else (
+        df.columns[5] if len(df.columns) > 5 else None
+    )
+    records: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        nick = str(row[user_col]).strip().lower()
+        if not nick:
+            continue
+        role = ""
+        if roles_col is not None:
+            role = "guest" if "system_guest" in str(row[roles_col]) else "member"
+        records[nick] = {"nick": nick, "comment": role}
+    return sorted(records.values(), key=lambda r: r["nick"])
 
 
 def parse_testit(uploaded) -> list[str]:
@@ -467,7 +488,7 @@ def build_report(report_id: int) -> dict[str, pd.DataFrame]:
                 "Количество": 1,
                 "Цена": cost,
                 "Стоимость": cost,
-                "Комментарий": "",
+                "Комментарий": row.get("comment") or "",
                 "Свободное поле": "",
             })
     if finance_rows:
@@ -653,7 +674,7 @@ def build_dept_excel(dept: str, entries: dict, prices: dict) -> bytes:
                     "Количество": 1,
                     "Цена": cost,
                     "Стоимость": cost,
-                    "Комментарий": "",
+                    "Комментарий": r.get("comment") or "",
                     "Свободное поле": "",
                 })
 
