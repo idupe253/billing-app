@@ -83,6 +83,28 @@ def get_service_nicks(report_id: int) -> dict[str, list[str]]:
         return result
 
 
+def get_hub_entries(report_id: int, hub: str) -> list[dict]:
+    """Лицензии сотрудников конкретного ЦФО/хаба с их отделом (столбец 2).
+
+    Для внутреннего биллинга: join billing_entries с report_employees по нику,
+    фильтр по cfo=hub. Возвращает список {service_id, nick, dept, comment}.
+    Только сотрудники из справочника (у доп/ненайденных нет отдела).
+    """
+    with get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT b.service_id, b.nick, e.dept, b.comment
+            FROM billing_entries b
+            JOIN report_employees e
+              ON e.report_id = b.report_id AND e.nick = b.nick
+            WHERE b.report_id = %s AND e.cfo = %s
+            ORDER BY e.dept, b.service_id, b.nick;
+            """,
+            (report_id, hub),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
 def get_entries(report_id: int) -> dict[str, list[dict]]:
     """Записи биллинга с уже посчитанными cfo/source.
 

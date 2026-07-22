@@ -524,33 +524,35 @@ def sheets_to_excel(sheets: dict[str, pd.DataFrame]) -> bytes:
 
 # ─── Генерация отчёта по отделу (HTML + XLSX) ────────────────────────────────
 
+# Цветовые схемы HTML-отчётов (Montserrat, фиолетовый акцент, мягкие тона)
+HTML_THEMES = {
+    "light": {
+        "bg": "#f5f3f7", "card": "#ffffff", "text": "#2d2640", "text2": "#6b6480",
+        "border": "#e8e4ef", "accent": "#7c3aed", "accent_light": "#f3eeff",
+        "hover": "#f9f7fc", "user_bg": "#faf8fe", "user_text": "#5b5272",
+        "total_bg": "#f3eeff", "th_bg": "#f8f6fb", "th_text": "#7c6f96",
+    },
+    "dark": {
+        "bg": "#1a1625", "card": "#231e30", "text": "#e8e4ef", "text2": "#9b93a8",
+        "border": "#342d45", "accent": "#a78bfa", "accent_light": "#2d2545",
+        "hover": "#2a2438", "user_bg": "#1e1a2a", "user_text": "#b0a8c0",
+        "total_bg": "#2d2545", "th_bg": "#1e1a2a", "th_text": "#9b93a8",
+    },
+    "accent": {
+        "bg": "#f7f5fa", "card": "#ffffff", "text": "#1e1535", "text2": "#6b6480",
+        "border": "#ddd6ec", "accent": "#7c3aed", "accent_light": "#ede5ff",
+        "hover": "#f5f0ff", "user_bg": "#f9f5ff", "user_text": "#5b4a80",
+        "total_bg": "#7c3aed", "th_bg": "#f0eafc", "th_text": "#6b5a9e",
+        "total_text": "#ffffff",
+    },
+}
+
+
 def build_dept_html(dept: str, entries: dict, prices: dict, theme: str = "light") -> str:
     """Генерация HTML-отчёта для отдела. Темы: light, dark, accent."""
     date_str = datetime.now().strftime("%d.%m.%Y")
 
-    # Цветовые схемы в стиле брендбука (Montserrat, фиолетовый акцент, мягкие тона)
-    themes = {
-        "light": {
-            "bg": "#f5f3f7", "card": "#ffffff", "text": "#2d2640", "text2": "#6b6480",
-            "border": "#e8e4ef", "accent": "#7c3aed", "accent_light": "#f3eeff",
-            "hover": "#f9f7fc", "user_bg": "#faf8fe", "user_text": "#5b5272",
-            "total_bg": "#f3eeff", "th_bg": "#f8f6fb", "th_text": "#7c6f96",
-        },
-        "dark": {
-            "bg": "#1a1625", "card": "#231e30", "text": "#e8e4ef", "text2": "#9b93a8",
-            "border": "#342d45", "accent": "#a78bfa", "accent_light": "#2d2545",
-            "hover": "#2a2438", "user_bg": "#1e1a2a", "user_text": "#b0a8c0",
-            "total_bg": "#2d2545", "th_bg": "#1e1a2a", "th_text": "#9b93a8",
-        },
-        "accent": {
-            "bg": "#f7f5fa", "card": "#ffffff", "text": "#1e1535", "text2": "#6b6480",
-            "border": "#ddd6ec", "accent": "#7c3aed", "accent_light": "#ede5ff",
-            "hover": "#f5f0ff", "user_bg": "#f9f5ff", "user_text": "#5b4a80",
-            "total_bg": "#7c3aed", "th_bg": "#f0eafc", "th_text": "#6b5a9e",
-            "total_text": "#ffffff",
-        },
-    }
-    t = themes.get(theme, themes["light"])
+    t = HTML_THEMES.get(theme, HTML_THEMES["light"])
     total_text = t.get("total_text", t["text"])
 
     rows_html = ""
@@ -735,6 +737,238 @@ def build_general_excel(report_id: int) -> bytes:
     return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
 
 
+# ─── Внутренний биллинг (по отделам внутри хаба) ──────────────────────────────
+
+INTERNAL_HUB = "Technology Hub"  # хаб, для которого делаем внутренний биллинг по отделам
+
+
+def _safe_sheet_names(depts: list[str]) -> dict[str, str]:
+    """Уникальные корректные имена листов Excel (≤31 символа, без : \\ / ? * [ ])."""
+    used: set[str] = set()
+    result: dict[str, str] = {}
+    for d in depts:
+        base = re.sub(r"[\[\]:*?/\\]", "_", d).strip()[:31] or "Лист"
+        name, i = base, 1
+        while name in used:
+            suffix = f"~{i}"
+            name = base[:31 - len(suffix)] + suffix
+            i += 1
+        used.add(name)
+        result[d] = name
+    return result
+
+
+def _internal_by_dept(report_id: int) -> dict[str, list[dict]]:
+    """Записи внутреннего биллинга, сгруппированные по отделу (в порядке систем)."""
+    rows = billing.get_hub_entries(report_id, INTERNAL_HUB)
+    svc_order = {s["id"]: i for i, s in enumerate(SERVICES)}
+    by_dept: dict[str, list[dict]] = {}
+    for r in rows:
+        by_dept.setdefault(r["dept"], []).append(r)
+    for dept in by_dept:
+        by_dept[dept].sort(key=lambda r: (svc_order.get(r["service_id"], 99), r["nick"]))
+    return by_dept
+
+
+def build_internal_excel(report_id: int) -> bytes:
+    """Excel внутреннего биллинга: отдельная вкладка на каждый отдел хаба.
+
+    Формат столбцов — как в отчётах для финансов; «Потребитель» = отдел (столбец 2).
+    """
+    by_dept = _internal_by_dept(report_id)
+    prices = billing.get_prices(report_id)
+    name_map = _safe_sheet_names(sorted(by_dept))
+
+    sheets: dict[str, pd.DataFrame] = {}
+    for dept in sorted(by_dept):
+        rows = []
+        for r in by_dept[dept]:
+            svc_name = SVC_ID_TO_NAME.get(r["service_id"], r["service_id"])
+            price = prices.get(r["service_id"], 0)
+            cost = round(price, 2) if price else ""
+            rows.append({
+                "Продукты ТХ": f"ПО {svc_name}",
+                "Nickname / Наименование": r["nick"],
+                "Потребитель": dept,
+                "Единица продукта": "1 лицензия",
+                "Количество": 1,
+                "Цена": cost,
+                "Стоимость": cost,
+                "Комментарий": r.get("comment") or "",
+                "Свободное поле": "",
+            })
+        sheets[name_map[dept]] = pd.DataFrame(rows)
+
+    if not sheets:
+        sheets["Пусто"] = pd.DataFrame(columns=["Продукты ТХ", "Nickname / Наименование"])
+    return sheets_to_excel(sheets)
+
+
+def build_internal_html(report_id: int, theme: str = "accent") -> str:
+    """HTML внутреннего биллинга: одна страница, секция-таблица на каждый отдел хаба.
+
+    Стиль — как у отчётов по отделам: раскрывающиеся списки пользователей по клику,
+    итог по отделу и общий итог. «Потребитель» — отдел (столбец 2).
+    """
+    by_dept = _internal_by_dept(report_id)
+    prices = billing.get_prices(report_id)
+    t = HTML_THEMES.get(theme, HTML_THEMES["accent"])
+    total_text = t.get("total_text", t["text"])
+    date_str = datetime.now().strftime("%d.%m.%Y")
+
+    sections = ""
+    grand_total = 0.0
+    for di, dept in enumerate(sorted(by_dept)):
+        by_svc: dict[str, list[str]] = {}
+        for r in by_dept[dept]:
+            by_svc.setdefault(r["service_id"], []).append(r["nick"])
+
+        rows_html = ""
+        dept_total = 0.0
+        for svc in SERVICES:
+            sid = svc["id"]
+            if sid not in by_svc:
+                continue
+            svc_name = SVC_ID_TO_NAME.get(sid, sid)
+            nicks = sorted(by_svc[sid])
+            count = len(nicks)
+            price = prices.get(sid, 0)
+            cost = round(count * price, 2) if price else 0
+            dept_total += cost
+            cost_str = f"{cost:,.2f} ₽" if price else "—"
+            price_str = f"{price:,.2f} ₽" if price else "—"
+            uid = f"{di}_{re.sub(r'\\W', '_', sid)}"
+            users_html = "".join(f"<li>{n}</li>" for n in nicks)
+            rows_html += f"""
+            <tr class="svc-row" onclick="toggle('{uid}')">
+                <td><span class="arrow" id="arrow_{uid}">▶</span> {svc_name}</td>
+                <td style="text-align:center">{count}</td>
+                <td style="text-align:right">{price_str}</td>
+                <td style="text-align:right">{cost_str}</td>
+            </tr>
+            <tr class="user-row" id="users_{uid}" style="display:none">
+                <td colspan="4"><ul class="user-list">{users_html}</ul></td>
+            </tr>"""
+
+        grand_total += dept_total
+        dept_total_str = f"{dept_total:,.2f} ₽" if dept_total else "—"
+        sections += f"""
+        <div class="card">
+          <h2>{dept}</h2>
+          <table>
+            <thead>
+              <tr><th>Сервис</th><th style="text-align:center">Лицензии</th><th style="text-align:right">Цена/шт</th><th style="text-align:right">Стоимость</th></tr>
+            </thead>
+            <tbody>
+              {rows_html}
+              <tr class="total"><td>ИТОГО по отделу</td><td></td><td></td><td style="text-align:right">{dept_total_str}</td></tr>
+            </tbody>
+          </table>
+        </div>"""
+
+    grand_total_str = f"{grand_total:,.2f} ₽" if grand_total else "—"
+
+    # Данные для клиентского поиска по нику: nick -> {dept, services:[{name, cost}]}
+    users: dict[str, dict] = {}
+    for dept, rows in by_dept.items():
+        for r in rows:
+            u = users.setdefault(r["nick"], {"dept": dept, "services": []})
+            price = prices.get(r["service_id"], 0)
+            u["services"].append({
+                "name": SVC_ID_TO_NAME.get(r["service_id"], r["service_id"]),
+                "cost": f"{round(price, 2):,.2f} ₽" if price else "",
+            })
+    users_json = json.dumps(users, ensure_ascii=False)
+
+    return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Внутренний биллинг — {INTERNAL_HUB}</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ font-family: 'Montserrat', 'Segoe UI', system-ui, sans-serif; background: {t['bg']}; color: {t['text']}; padding: 40px; }}
+  .wrap {{ max-width: 860px; margin: 0 auto; }}
+  .page-header {{ margin-bottom: 24px; }}
+  .accent-bar {{ width: 48px; height: 3px; background: {t['accent']}; border-radius: 2px; margin-bottom: 14px; }}
+  .page-header h1 {{ font-size: 23px; font-weight: 700; color: {t['text']}; }}
+  .page-header .meta {{ font-size: 13px; color: {t['text2']}; margin-top: 6px; }}
+  .card {{ background: {t['card']}; border-radius: 16px; box-shadow: 0 4px 24px rgba(124,58,237,0.06); padding: 32px; margin-bottom: 20px; }}
+  .card h2 {{ font-size: 17px; font-weight: 600; color: {t['text']}; margin-bottom: 4px; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+  th {{ background: {t['th_bg']}; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: {t['th_text']}; padding: 10px 14px; text-align: left; border-bottom: 2px solid {t['border']}; }}
+  td {{ padding: 11px 14px; border-bottom: 1px solid {t['border']}; font-size: 14px; color: {t['text']}; }}
+  .svc-row {{ cursor: pointer; transition: background 0.15s; }}
+  .svc-row:hover {{ background: {t['hover']}; }}
+  .arrow {{ display: inline-block; font-size: 11px; margin-right: 6px; transition: transform 0.2s; color: {t['accent']}; }}
+  .arrow.open {{ transform: rotate(90deg); }}
+  .user-list {{ list-style: none; padding: 10px 0 10px 28px; margin: 0; }}
+  .user-list li {{ font-size: 13px; color: {t['user_text']}; padding: 3px 0; }}
+  .user-row td {{ background: {t['user_bg']}; padding: 0 14px; }}
+  .total {{ font-weight: 700; background: {t['total_bg']}; }}
+  .total td {{ border-top: 2px solid {t['border']}; padding-top: 12px; color: {total_text}; }}
+  .grand {{ background: {t['card']}; border-radius: 16px; padding: 20px 32px; font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; }}
+  .footer {{ margin-top: 24px; font-size: 11px; color: {t['text2']}; text-align: center; }}
+  .search-box {{ margin-bottom: 20px; }}
+  .search-box input {{ width: 100%; padding: 13px 16px; font-size: 15px; font-family: inherit;
+      border: 2px solid {t['border']}; border-radius: 12px; background: {t['card']}; color: {t['text']}; outline: none; }}
+  .search-box input:focus {{ border-color: {t['accent']}; }}
+  #results {{ margin-bottom: 20px; }}
+  .ucard {{ background: {t['card']}; border-radius: 12px; padding: 16px 20px; margin-bottom: 10px; border-left: 3px solid {t['accent']}; }}
+  .ucard .uname {{ font-size: 15px; font-weight: 700; color: {t['text']}; }}
+  .ucard .udept {{ font-size: 12px; color: {t['text2']}; margin: 2px 0 8px; }}
+  .ucard ul {{ list-style: none; padding: 0; margin: 0; }}
+  .ucard li {{ font-size: 13px; color: {t['user_text']}; padding: 3px 0; display: flex; justify-content: space-between; }}
+  .nohit {{ color: {t['text2']}; font-size: 13px; padding: 8px 4px; }}
+</style>
+<script>
+function toggle(id) {{
+  var row = document.getElementById('users_' + id);
+  var arrow = document.getElementById('arrow_' + id);
+  if (row.style.display === 'none') {{ row.style.display = 'table-row'; arrow.classList.add('open'); }}
+  else {{ row.style.display = 'none'; arrow.classList.remove('open'); }}
+}}
+
+var USERS = {users_json};
+function esc(s) {{ var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+function doSearch() {{
+  var q = document.getElementById('search').value.trim().toLowerCase();
+  var box = document.getElementById('results');
+  if (!q) {{ box.innerHTML = ''; return; }}
+  var hits = Object.keys(USERS).filter(function(n) {{ return n.indexOf(q) !== -1; }}).sort();
+  if (!hits.length) {{ box.innerHTML = '<div class="nohit">Ничего не найдено</div>'; return; }}
+  box.innerHTML = hits.map(function(n) {{
+    var u = USERS[n];
+    var lis = u.services.map(function(s) {{
+      return '<li><span>' + esc(s.name) + '</span><span>' + esc(s.cost) + '</span></li>';
+    }}).join('');
+    return '<div class="ucard"><div class="uname">' + esc(n) + '</div>' +
+           '<div class="udept">' + esc(u.dept) + ' · ' + u.services.length + ' лиц.</div>' +
+           '<ul>' + lis + '</ul></div>';
+  }}).join('');
+}}
+</script>
+</head>
+<body>
+<div class="wrap">
+  <div class="page-header">
+    <div class="accent-bar"></div>
+    <h1>Внутренний биллинг — {INTERNAL_HUB}</h1>
+    <div class="meta">По отделам · Период: {date_str}</div>
+  </div>
+  <div class="search-box">
+    <input id="search" type="text" placeholder="🔍 Поиск по нику — покажет лицензии пользователя" oninput="doSearch()">
+  </div>
+  <div id="results"></div>
+  {sections}
+  <div class="grand"><span>ИТОГО по хабу</span><span>{grand_total_str}</span></div>
+  <div class="footer">Billing Automation Tool</div>
+</div>
+</body>
+</html>"""
+
+
 def build_all_dept_zip(report_id: int, theme="light") -> bytes:
     """Генерация ZIP-архива со всеми отчётами по отделам (HTML + XLSX)."""
     entries = billing.get_entries(report_id)
@@ -837,6 +1071,74 @@ def render_history():
         ).sort_index()
         cfo_pivot["ИТОГО"] = cfo_pivot.sum(axis=1)
         st.dataframe(cfo_pivot, use_container_width=True)
+
+
+# ─── Вкладка «Внутренний биллинг» (по отделам внутри хаба) ────────────────────
+
+def render_internal_billing():
+    """Внутренний биллинг Technology Hub: сводка по отделам, выпадающие списки, Excel."""
+    report_id = st.session_state.get("report_id")
+    st.subheader(f"🏢 Внутренний биллинг — {INTERNAL_HUB}")
+    if report_id is None:
+        st.info("Выберите период в боковой панели.")
+        return
+
+    by_dept = _internal_by_dept(report_id)
+    if not by_dept:
+        st.info(
+            f"Нет данных: у сотрудников «{INTERNAL_HUB}» не найдено лицензий. "
+            "Загрузите справочник и файлы сервисов."
+        )
+        return
+
+    prices = billing.get_prices(report_id)
+
+    # Сводная таблица: Отдел × Сервис (кол-во лицензий)
+    recs = [
+        {"Отдел": d, "service_id": r["service_id"],
+         "Сервис": SVC_ID_TO_NAME.get(r["service_id"], r["service_id"]), "nick": r["nick"]}
+        for d, rows in by_dept.items() for r in rows
+    ]
+    df = pd.DataFrame(recs)
+    svc_names = [SVC_ID_TO_NAME.get(s["id"], s["id"]) for s in SERVICES
+                 if s["id"] in set(df["service_id"])]
+    mat = df.pivot_table(index="Отдел", columns="Сервис", values="nick",
+                         aggfunc="count", fill_value=0).reindex(columns=svc_names, fill_value=0)
+    mat["ИТОГО"] = mat.sum(axis=1)
+    mat = mat.sort_values("ИТОГО", ascending=False)
+    st.caption("Лицензии по отделам × сервисы")
+    st.dataframe(mat, use_container_width=True)
+
+    theme = st.session_state.get("selected_theme", "accent")
+    dl1, dl2 = st.columns(2)
+    dl1.download_button(
+        "⬇️ Excel по отделам (вкладки)",
+        data=build_internal_excel(report_id),
+        file_name=f"Internal_{INTERNAL_HUB}_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+    dl2.download_button(
+        "⬇️ HTML по отделам",
+        data=build_internal_html(report_id, theme=theme),
+        file_name=f"Internal_{INTERNAL_HUB}_{datetime.now().strftime('%Y-%m-%d')}.html",
+        mime="text/html",
+        use_container_width=True,
+    )
+
+    st.divider()
+    st.caption("Детализация по отделам")
+    for dept in sorted(by_dept):
+        rows = by_dept[dept]
+        with st.expander(f"{dept} — {len(rows)} лиц."):
+            det = [{
+                "Сервис": SVC_ID_TO_NAME.get(r["service_id"], r["service_id"]),
+                "Nickname": r["nick"],
+                "Комментарий": r.get("comment") or "",
+                "Стоимость": round(prices.get(r["service_id"], 0), 2)
+                             if prices.get(r["service_id"]) else "",
+            } for r in rows]
+            st.dataframe(pd.DataFrame(det), use_container_width=True, hide_index=True)
 
 
 # ─── Управление периодами ─────────────────────────────────────────────────────
@@ -977,8 +1279,8 @@ def main():
 
     # ─── Вкладки основного интерфейса ─────────────────────────────────────────
 
-    tab_main, tab_history, tab_params, tab_extra = st.tabs(
-        ["📊 Отчёт", "📈 История", "⚙️ Параметры", "👥 Доп DB Users"]
+    tab_main, tab_history, tab_internal, tab_params, tab_extra = st.tabs(
+        ["📊 Отчёт", "📈 История", "🏢 Внутренний биллинг", "⚙️ Параметры", "👥 Доп DB Users"]
     )
 
     report_id = st.session_state.get("report_id")
@@ -1052,6 +1354,9 @@ def main():
 
     with tab_history:
         render_history()
+
+    with tab_internal:
+        render_internal_billing()
 
     # ─── Вкладка «Параметры» ─────────────────────────────────────────────────
 
