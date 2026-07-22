@@ -194,8 +194,13 @@ STREAMLIT_THEMES = {
 # ─── Парсер справочника сотрудников ──────────────────────────────────────────
 
 def parse_db_users(uploaded) -> pd.DataFrame:
-    """Парсинг файла сотрудников (1С). Столбец A — ник, C — ЦФО."""
-    df = pd.read_excel(uploaded, sheet_name="TDSheet", dtype=str).fillna("")
+    """Парсинг файла сотрудников (1С). Столбец A — ник, C — ЦФО.
+
+    Данные на листе TDSheet; если такого листа нет — берём первый лист.
+    """
+    xls = pd.ExcelFile(uploaded)
+    sheet = "TDSheet" if "TDSheet" in xls.sheet_names else xls.sheet_names[0]
+    df = pd.read_excel(xls, sheet_name=sheet, dtype=str).fillna("")
     col_a = df.columns[0]  # ФизЛицо
     col_b = df.columns[1]  # Подразделение
     col_c = df.columns[2]  # ЦФО
@@ -248,6 +253,7 @@ def parse_github(uploaded) -> list[str]:
         saml = str(row.get(saml_col, "")).strip() if saml_col else ""
         login = str(row.get(login_col, "")).strip()
         nick = (saml or login).lower()
+        nick = nick.split("@")[0]  # SAML приходит как почта — отрезаем домен @deeplay.io
         if nick:
             nicks.append(nick)
     return sorted(set(nicks))
@@ -257,7 +263,8 @@ def parse_copilot(uploaded) -> list[str]:
     """GitHub Copilot: ник из столбца C (SAML Name ID or Email), вкладка Copilot Usage."""
     df = read_file(uploaded, sheet_name="Copilot Usage")
     col = "SAML Name ID or Email" if "SAML Name ID or Email" in df.columns else df.columns[2]
-    nicks = df[col].str.strip().str.lower().tolist()
+    # Значение приходит как почта — отрезаем домен, берём часть до @
+    nicks = df[col].str.strip().str.lower().str.split("@").str[0].tolist()
     return sorted(set(n for n in nicks if n))
 
 
@@ -328,11 +335,15 @@ def parse_testit(uploaded) -> list[str]:
 
 
 def parse_nick_from_col_a(uploaded) -> list[str]:
-    """1С / Jira: ник из столбца A (ФизЛицо) с очисткой скобок."""
+    """1С / Jira: ник из столбца A (ФизЛицо) с очисткой скобок.
+
+    Записи без настоящего ника (в ячейке ФИО — несколько слов через пробел)
+    исключаем: берём только однословные ники.
+    """
     df = read_file(uploaded)
     col = "ФизЛицо" if "ФизЛицо" in df.columns else df.columns[0]
     nicks = [clean_nick(v) for v in df[col]]
-    return sorted(set(n for n in nicks if n))
+    return sorted(set(n for n in nicks if n and " " not in n))
 
 
 PARSERS = {
