@@ -688,6 +688,42 @@ def build_dept_excel(dept: str, entries: dict, prices: dict) -> bytes:
     return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
 
 
+def build_general_excel(report_id: int) -> bytes:
+    """Общий Excel в формате отчётов по отделам, но одним листом и по порядку систем.
+
+    Строки идут по порядку сервисов (реестр SERVICES): сначала все записи Google,
+    потом M365 и т.д. — без разбивки по отделам. Потребитель = реальный ЦФО записи
+    (или «Не найден»). Формат столбцов — как в отчётах по отделам (для финансов).
+    """
+    entries = billing.get_entries(report_id)
+    prices = billing.get_prices(report_id)
+
+    all_rows = []
+    for svc in SERVICES:
+        svc_id = svc["id"]
+        if svc_id not in entries:
+            continue
+        svc_name = SVC_ID_TO_NAME.get(svc_id, svc_id)
+        price = prices.get(svc_id, 0)
+        cost = round(price, 2) if price else ""
+        for r in entries[svc_id]:
+            if r["source"] == "not_found":
+                continue  # пользователи без найденного отдела в общий файл не попадают
+            all_rows.append({
+                "Продукты ТХ": f"ПО {svc_name}",
+                "Nickname / Наименование": r["nick"],
+                "Потребитель": _dept_of(r),
+                "Единица продукта": "1 лицензия",
+                "Количество": 1,
+                "Цена": cost,
+                "Стоимость": cost,
+                "Комментарий": r.get("comment") or "",
+                "Свободное поле": "",
+            })
+
+    return sheets_to_excel({"Лицензии": pd.DataFrame(all_rows)})
+
+
 def build_all_dept_zip(report_id: int, theme="light") -> bytes:
     """Генерация ZIP-архива со всеми отчётами по отделам (HTML + XLSX)."""
     entries = billing.get_entries(report_id)
@@ -1199,18 +1235,17 @@ def main():
         with c3:
             export_depts = st.button("📁 По отделам (ZIP)", use_container_width=True)
 
-        if generate or export:
-            sheets = build_report(report_id)
-            if generate:
-                st.session_state.report_sheets = sheets
-            if export:
-                excel_bytes = sheets_to_excel(sheets)
-                st.download_button(
-                    "💾 Скачать",
-                    data=excel_bytes,
-                    file_name=f"Billing_Report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+        if generate:
+            st.session_state.report_sheets = build_report(report_id)
+
+        if export:
+            excel_bytes = build_general_excel(report_id)
+            st.download_button(
+                "💾 Скачать",
+                data=excel_bytes,
+                file_name=f"Billing_Report_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
         if export_depts:
             selected_theme = st.session_state.get("selected_theme", "light")
