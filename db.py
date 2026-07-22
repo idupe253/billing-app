@@ -47,8 +47,9 @@ def get_cursor(commit: bool = False):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         yield cur
-        if commit:
-            conn.commit()
+        # Закрываем транзакцию в любом случае: commit при записи, иначе rollback —
+        # чтобы соединение не оставалось «idle in transaction» и не держало блокировки.
+        conn.commit() if commit else conn.rollback()
     except Exception:
         conn.rollback()
         raise
